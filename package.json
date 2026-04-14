@@ -1,0 +1,12 @@
+{
+  "name": "collection-control-root",
+  "version": "1.0.0",
+  "scripts": {
+    "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend",
+    "build:frontend": "npm run build --prefix frontend",
+    "start": "node backend/index.js",
+    "dev:backend": "npm start --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "prod": "npm run build:frontend && npm start"
+  }
+}
