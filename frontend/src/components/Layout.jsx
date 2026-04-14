@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { 
-  FaSignOutAlt, FaShieldAlt, FaBars, FaTimes, FaChartPie, 
-  FaListUl, FaFileInvoiceDollar, FaUsers, FaChartLine, FaCheckCircle 
+import {
+  FaSignOutAlt, FaShieldAlt, FaBars, FaTimes, FaChartPie,
+  FaListUl, FaFileInvoiceDollar, FaUsers, FaChartLine, FaCheckCircle
 } from 'react-icons/fa';
 import API_URL from '../apiConfig';
 
@@ -17,14 +17,14 @@ export default function Layout({ children }) {
 
   useEffect(() => {
     fetchStats();
-    
+
     // Global listeners for realtime Collection UI updates
     const handleDraftUpdate = (e) => setDraftSubtracted(e.detail || 0);
     const handleCollectionSubmit = () => fetchStats();
-    
+
     window.addEventListener('draftCollectionUpdate', handleDraftUpdate);
     window.addEventListener('collectionSubmitted', handleCollectionSubmit);
-    
+
     return () => {
       window.removeEventListener('draftCollectionUpdate', handleDraftUpdate);
       window.removeEventListener('collectionSubmitted', handleCollectionSubmit);
@@ -45,8 +45,8 @@ export default function Layout({ children }) {
   };
 
   const navItems = [
-    { name: 'Dashboard', path: '/dashboard', icon: <FaChartPie /> },
     { name: 'Collections', path: '/collections', icon: <FaListUl /> },
+    { name: 'Dashboard', path: '/dashboard', icon: <FaChartPie /> },
   ];
 
   const closeSidebar = () => setIsSidebarOpen(false);
@@ -65,14 +65,14 @@ export default function Layout({ children }) {
               </div>
               <h2 className="font-black text-white uppercase tracking-tighter">Portal Access</h2>
             </div>
-            <button 
+            <button
               onClick={closeSidebar}
               className="p-3 bg-white/5 rounded-xl hover:bg-red-500/10 hover:text-red-400 transition-all lg:hidden"
             >
               <FaTimes />
             </button>
           </div>
-          
+
           <div className="bg-white/5 rounded-3xl p-5 border border-white/5">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-2xl bg-blue-600/20 border border-blue-500/20 flex items-center justify-center text-blue-400 text-lg font-black">
@@ -93,11 +93,10 @@ export default function Layout({ children }) {
             <button
               key={item.name}
               onClick={() => { navigate(item.path); closeSidebar(); }}
-              className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl text-sm font-bold transition-all ${
-                location.pathname === item.path 
-                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' 
+              className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl text-sm font-bold transition-all ${location.pathname === item.path
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                 : 'text-slate-400 hover:bg-white/5 hover:text-white'
-              }`}
+                }`}
             >
               {item.icon}
               {item.name}
@@ -154,7 +153,7 @@ export default function Layout({ children }) {
 
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[45] transition-opacity lg:hidden"
           onClick={closeSidebar}
         />
@@ -165,7 +164,7 @@ export default function Layout({ children }) {
         {/* Top Header */}
         <header className="h-20 border-b border-white/5 px-6 flex items-center justify-between sticky top-0 bg-[#0a0f1c]/90 backdrop-blur-xl z-40">
           <div className="flex items-center gap-4">
-            <button 
+            <button
               onClick={toggleSidebar}
               className="p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-all active:scale-95 lg:hidden"
             >
