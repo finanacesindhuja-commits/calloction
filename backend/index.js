@@ -280,8 +280,11 @@ app.post('/api/login', (req, res) => {
 // Serve Static Files from Frontend Dist folder
 app.use(express.static(path.join(__dirname, '../frontend/dist')));
 
-// SPA Catch-all
+// SPA Catch-all: Hand over non-API routes to React Router
 app.get('*', (req, res) => {
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'API endpoint not found' });
+  }
   res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
 
