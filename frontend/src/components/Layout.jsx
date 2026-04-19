@@ -80,7 +80,9 @@ export default function Layout({ children }) {
               </div>
               <div>
                 <p className="text-sm font-black text-white tracking-tight">{userName || 'Relationship Officer'}</p>
-                <p className="text-[10px] text-blue-400 font-bold uppercase tracking-[0.2em]">{staffId || 'ID-OFFICER'}</p>
+                <p className="text-[10px] text-blue-400 font-bold uppercase tracking-[0.2em]">
+                  {staffId || 'ID-OFFICER'} {localStorage.getItem('branch') && `• ${localStorage.getItem('branch')}`}
+                </p>
               </div>
             </div>
           </div>

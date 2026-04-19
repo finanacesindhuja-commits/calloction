@@ -338,12 +338,13 @@ app.post('/api/login', async (req, res) => {
       return res.status(403).json({ message: 'Access Denied: Only Relationship Officers are permitted to enter this portal!' });
     }
 
-    // Success response with actual name and ID from database
+    // Success response with actual name, ID, and branch from database
     return res.status(200).json({
       message: 'Login successful',
       role: staff.role,
       staffId: staff.staff_id,
-      name: staff.name
+      name: staff.name,
+      branch: staff.branch
     });
   } catch (err) {
     console.error('Login error:', err);

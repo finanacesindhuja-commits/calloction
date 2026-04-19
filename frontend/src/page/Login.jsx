@@ -33,6 +33,7 @@ export default function Login() {
         localStorage.setItem('role', data.role);
         localStorage.setItem('staffId', data.staffId);
         localStorage.setItem('name', data.name);
+        localStorage.setItem('branch', data.branch || '');
         navigate('/collections');
       } else {
         setError(data.message || 'Invalid credentials.');
