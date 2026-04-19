@@ -33,7 +33,7 @@ export default function Layout({ children }) {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/stats`);
+      const res = await fetch(`${API_URL}/api/stats?staffId=${staffId}`);
       const data = await res.json();
       if (res.ok) setStats(data);
     } catch (err) { console.error('Stats error:', err); }

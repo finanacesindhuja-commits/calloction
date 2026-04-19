@@ -25,9 +25,11 @@ export default function Collections() {
     fetchCenters();
   }, []);
 
-  const fetchCenters = async () => {
+  const fetchCenters = async (date) => {
     try {
-      const res = await fetch(`${API_URL}/api/centers`);
+      const staffId = localStorage.getItem('staffId');
+      const targetDate = date || selectedDate;
+      const res = await fetch(`${API_URL}/api/centers?staffId=${staffId}&date=${targetDate}`);
       const data = await res.json();
       setCenters(data);
     } catch (err) {
@@ -63,8 +65,10 @@ export default function Collections() {
 
   const handleDateChange = (date) => {
     setSelectedDate(date);
-    // If center is already selected, re-evaluate (amounts empty to prevent mismatch)
-    // setCollectionAmounts({});
+    setSelectedCenter(''); // Reset center selection when date changes
+    setMembers([]);
+    setSchedules([]);
+    fetchCenters(date);
   };
 
   const handleAmountChange = (memberId, value) => {
@@ -329,8 +333,16 @@ export default function Collections() {
                           <tr key={member.id} className="group block md:table-row bg-slate-800/40 md:bg-transparent rounded-2xl md:rounded-none border border-white/5 md:border-0 hover:bg-white/5 transition-colors">
                             <td className="px-5 py-4 md:px-6 md:py-5 flex md:table-cell items-center justify-between border-b border-white/5 md:border-0">
                               <div className="flex items-center gap-4">
-                                <div className="w-10 h-10 rounded-xl bg-blue-600/20 flex items-center justify-center text-blue-400 shrink-0">
-                                  <FaUsers />
+                                <div className="w-16 h-16 rounded-2xl bg-slate-800 flex items-center justify-center overflow-hidden border-2 border-white/10 shrink-0 shadow-lg group-hover:border-blue-500/50 transition-all">
+                                  {member.member_photo_url ? (
+                                    <img 
+                                      src={member.member_photo_url} 
+                                      alt={member.member_name} 
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
+                                    />
+                                  ) : null}
+                                  <FaUsers className={`text-blue-400/40 ${member.member_photo_url ? 'hidden' : 'block'}`} size={24} />
                                 </div>
                                 <div className="flex flex-col gap-1.5">
                                   <p className="font-bold text-white text-sm md:text-md uppercase tracking-tight">{member.member_name}</p>

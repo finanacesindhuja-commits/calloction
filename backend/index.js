@@ -32,13 +32,34 @@ app.get('/api/health', (req, res) => {
 // Stats for RO Dashboard
 app.get('/api/stats', async (req, res) => {
   try {
+    const { staffId } = req.query;
     const today = new Date().toISOString().split('T')[0];
     
+    // Step 0: Identify allowed centers if staffId is provided
+    let allowedCenterIds = null;
+    if (staffId) {
+      const { data: staffCenters } = await supabase
+        .from('centers')
+        .select('id')
+        .ilike('staff_id', staffId);
+      allowedCenterIds = (staffCenters || []).map(c => c.id);
+      
+      if (allowedCenterIds.length === 0) {
+        return res.json({ targetToday: 0, collectedToday: 0, activeCenters: 0, efficiency: 0 });
+      }
+    }
+
     // 1. Current Target Collection (Dues up to today)
-    const { data: allSchedules, error: schError } = await supabase
+    let schQuery = supabase
       .from('collection_schedules')
-      .select('amount, status, collected_amount, loan_id, member_id, scheduled_date')
+      .select('amount, status, collected_amount, loan_id, member_id, scheduled_date, approved_at, center_id')
       .order('scheduled_date', { ascending: true });
+
+    if (allowedCenterIds) {
+      schQuery = schQuery.in('center_id', allowedCenterIds);
+    }
+
+    const { data: allSchedules, error: schError } = await schQuery;
 
     if (schError) throw schError;
 
@@ -79,10 +100,16 @@ app.get('/api/stats', async (req, res) => {
     let collectedToday = strictlyCollectedToday;
 
     // 2. Active Centers Count
-    const { data: activeLoans, error: loanError } = await supabase
+    let loanQuery = supabase
       .from('loans')
       .select('center_id')
       .eq('status', 'DISBURSED');
+
+    if (allowedCenterIds) {
+      loanQuery = loanQuery.in('center_id', allowedCenterIds);
+    }
+
+    const { data: activeLoans, error: loanError } = await loanQuery;
 
     if (loanError) throw loanError;
     const activeCenters = [...new Set(activeLoans.map(l => l.center_id))].length;
@@ -101,14 +128,33 @@ app.get('/api/stats', async (req, res) => {
 // GET Centers with Active Collections
 app.get('/api/centers', async (req, res) => {
   try {
+    const { staffId, date } = req.query;
     const today = new Date().toISOString().split('T')[0];
+    const targetDate = date || today;
     
-    // Get distinct center IDs that have pending/partial schedules up to today
-    const { data: pendingSchedules, error: schError } = await supabase
+    // Get distinct center IDs that have pending/partial schedules for the target date
+    let schQuery = supabase
       .from('collection_schedules')
       .select('center_id')
-      .lte('scheduled_date', today)
+      .eq('scheduled_date', targetDate)
       .neq('status', 'Paid');
+
+    // If staff filtering is needed for the initial list discovery
+    if (staffId) {
+      // We can either filter schedules by centers assigned to staff
+      // OR fetch schedules first and then filter centers later.
+      // Let's optimize by getting staff centers first.
+      const { data: staffCenters } = await supabase
+        .from('centers')
+        .select('id')
+        .ilike('staff_id', staffId);
+      const staffCenterIds = (staffCenters || []).map(c => c.id);
+      
+      if (staffCenterIds.length === 0) return res.json([]);
+      schQuery = schQuery.in('center_id', staffCenterIds);
+    }
+
+    const { data: pendingSchedules, error: schError } = await schQuery;
 
     if (schError) throw schError;
 
@@ -118,11 +164,17 @@ app.get('/api/centers', async (req, res) => {
       return res.json([]);
     }
 
-    const { data: centers, error: centerError } = await supabase
+    let centerQuery = supabase
       .from('centers')
       .select('*')
       .in('id', centerIds)
       .order('name', { ascending: true });
+    
+    if (staffId) {
+      centerQuery = centerQuery.ilike('staff_id', staffId);
+    }
+
+    const { data: centers, error: centerError } = await centerQuery;
     
     if (centerError) throw centerError;
     res.json(centers || []);
@@ -148,7 +200,7 @@ app.get('/api/bills/:centerId', async (req, res) => {
     // 2. Get members of this center
     const { data: members, error: memError } = await supabase
       .from('loans')
-      .select('member_name, id, amount_sanctioned, loan_app_id, members(member_no)')
+      .select('member_name, id, amount_sanctioned, loan_app_id, member_photo_url, members(member_no)')
       .eq('center_id', centerId)
       .eq('status', 'DISBURSED');
 
@@ -264,17 +316,39 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { staffId, password, role } = req.body;
-  if (role !== 'Relationship Officer') {
-    return res.status(403).json({ message: 'Access Denied!' });
+  
+  try {
+    // Check if the user exists and the password matches in the 'staff' table
+    // Using .ilike for case-insensitive Staff ID matching
+    const { data: staff, error } = await supabase
+      .from('staff')
+      .select('*')
+      .ilike('staff_id', staffId)
+      .eq('password', password)
+      .single();
+
+    if (error || !staff) {
+      return res.status(401).json({ message: 'Invalid Staff ID or Password!' });
+    }
+
+    // Strict check for the 'Relationship Officer' role
+    if (staff.role !== 'Relationship Officer') {
+      return res.status(403).json({ message: 'Access Denied: Only Relationship Officers are permitted to enter this portal!' });
+    }
+
+    // Success response with actual name and ID from database
+    return res.status(200).json({
+      message: 'Login successful',
+      role: staff.role,
+      staffId: staff.staff_id,
+      name: staff.name
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Database authentication failed' });
   }
-  return res.status(200).json({
-    message: 'Login successful',
-    role: 'Relationship Officer',
-    staffId: staffId,
-    name: 'Relationship Officer'
-  });
 });
 
 // Serve Static Files from Frontend Dist folder

@@ -22,7 +22,8 @@ export default function Dashboard() {
 
   const fetchCenters = async () => {
     try {
-      const res = await fetch(`${apiUrl}/api/centers`);
+      const staffId = localStorage.getItem('staffId');
+      const res = await fetch(`${apiUrl}/api/centers?staffId=${staffId}`);
       const data = await res.json();
       if (res.ok) setCenters(data);
     } catch (err) { console.error('Centers error:', err); }
@@ -165,8 +166,12 @@ export default function Dashboard() {
                           className="group bg-slate-800/40 border border-white/5 p-6 rounded-3xl text-left transition-all hover:border-indigo-500/50 hover:bg-indigo-600/5"
                         >
                           <div className="flex justify-between items-center mb-4">
-                            <div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center">
-                              <FaUserCircle className="text-slate-400 group-hover:text-indigo-400" />
+                            <div className="w-14 h-14 bg-slate-800 rounded-2xl flex items-center justify-center overflow-hidden border-2 border-white/10 shadow-xl group-hover:border-indigo-500/50 transition-all">
+                              {member.member_photo_url ? (
+                                <img src={member.member_photo_url} alt="Profile" className="w-full h-full object-cover" />
+                              ) : (
+                                <FaUserCircle className="text-slate-600 text-3xl" />
+                              )}
                             </div>
                             <div className="text-[10px] font-black text-emerald-400 uppercase bg-emerald-500/10 px-2 py-1 rounded-lg">Active</div>
                           </div>
