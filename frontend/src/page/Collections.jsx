@@ -110,15 +110,18 @@ export default function Collections() {
     );
     
     let targetAmount = 0;
+    let penaltyAmount = 0;
     let weekStrings = [];
     
     matchingSchedules.forEach(s => {
       targetAmount += (Number(s.amount) - (Number(s.collected_amount) || 0));
+      penaltyAmount += Number(s.penalty) || 0;
       if (s.week_number) weekStrings.push(`Week ${s.week_number}`);
     });
     
     memberTargets[member.id] = {
-      amount: targetAmount,
+      amount: targetAmount + penaltyAmount,
+      penalty: penaltyAmount,
       week: weekStrings.length > 0 ? weekStrings.join(', ') : null
     };
   });
@@ -133,7 +136,7 @@ export default function Collections() {
     );
     let mTarget = 0;
     mSchedules.forEach(s => {
-      mTarget += (Number(s.amount) - (Number(s.collected_amount) || 0));
+      mTarget += ((Number(s.amount) + (Number(s.penalty) || 0)) - (Number(s.collected_amount) || 0));
     });
     totalCenterTarget += mTarget;
   });
@@ -180,7 +183,7 @@ export default function Collections() {
          for (const sch of mSchedules) {
             if (remainingToAllocate <= 0) break;
             
-            const target = Number(sch.amount);
+            const target = Number(sch.amount) + (Number(sch.penalty) || 0);
             const collectedSoFar = Number(sch.collected_amount) || 0;
             const due = target - collectedSoFar;
             
@@ -208,6 +211,18 @@ export default function Collections() {
         body: JSON.stringify({ payments: paymentsToProcess })
       });
       if (res.ok) {
+        const data = await res.json();
+        
+        if (data.closedLoans && data.closedLoans.length > 0) {
+          const closedLoan = data.closedLoans[0]; // Take the first one for the redirect flow
+          alert(`Loan for ${closedLoan.member_name} is completed! Redirecting to new application portal...`);
+          
+          // Redirect to Loan Application portal with auto-select parameters
+          const loanAppUrl = `http://localhost:5173/centers?auto_center_id=${closedLoan.center_id}&auto_member_id=${closedLoan.member_id}`;
+          window.location.href = loanAppUrl;
+          return;
+        }
+
         alert('Collections tallied and submitted perfectly!');
         window.dispatchEvent(new Event('collectionSubmitted'));
         setStep(1); // Reset to step 1
@@ -358,9 +373,16 @@ export default function Collections() {
                               <span className="md:hidden text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Target / Due</span>
                               {target > 0 ? (
                                 <div className="flex flex-col items-end md:items-start gap-1">
-                                  <span className="px-3 py-1.5 bg-red-500/10 text-red-400 text-sm font-black rounded-xl font-mono tracking-tighter border border-red-500/20 shadow-inner">
-                                    ₹{target.toLocaleString()}
-                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="px-3 py-1.5 bg-red-500/10 text-red-400 text-sm font-black rounded-xl font-mono tracking-tighter border border-red-500/20 shadow-inner">
+                                      ₹{target.toLocaleString()}
+                                    </span>
+                                    {targetInfo.penalty > 0 && (
+                                      <span className="px-2 py-1 bg-yellow-500/10 text-yellow-400 text-[9px] font-black rounded-lg uppercase tracking-widest border border-yellow-500/20 shadow-inner whitespace-nowrap">
+                                          + ₹{targetInfo.penalty} Late Fee
+                                      </span>
+                                    )}
+                                  </div>
                                   {weekStr && <span className="text-[9px] text-red-400/60 font-bold uppercase pl-1">{weekStr}</span>}
                                 </div>
                               ) : (

@@ -29,6 +29,19 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Collection Control Backend is running!' });
 });
 
+// Utility to calculate dynamic 20 Rs daily late penalty
+const getPenalty = (scheduledDate, scheduleStatus) => {
+  if (scheduleStatus === 'Paid') return 0;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayObj = new Date(todayStr);
+  const schedObj = new Date(scheduledDate);
+  
+  const diffTime = todayObj - schedObj;
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  
+  return diffDays > 0 ? diffDays * 20 : 0;
+};
+
 // Stats for RO Dashboard
 app.get('/api/stats', async (req, res) => {
   try {
@@ -69,7 +82,8 @@ app.get('/api/stats', async (req, res) => {
 
     (allSchedules || []).forEach(s => {
       if (s.scheduled_date <= today) {
-        const fullAmount = Number(s.amount) || 0;
+        const penalty = getPenalty(s.scheduled_date, s.status);
+        const fullAmount = (Number(s.amount) || 0) + penalty;
         const collected = Number(s.collected_amount) || 0;
         const due = fullAmount - collected;
         
@@ -189,13 +203,19 @@ app.get('/api/bills/:centerId', async (req, res) => {
     const { centerId } = req.params;
     
     // 1. Get all schedules for this center
-    const { data: schedules, error: schError } = await supabase
+    const { data: rawSchedules, error: schError } = await supabase
       .from('collection_schedules')
       .select('*')
       .eq('center_id', centerId)
       .order('scheduled_date', { ascending: true });
 
     if (schError) throw schError;
+
+    // Map schedules to include daily penalty
+    const schedules = (rawSchedules || []).map(s => ({
+      ...s,
+      penalty: getPenalty(s.scheduled_date, s.status)
+    }));
 
     // 2. Get members of this center
     const { data: members, error: memError } = await supabase
@@ -230,13 +250,14 @@ app.post('/api/collections/:id/pay', async (req, res) => {
     // First find the original schedule amount
     const { data: schedule, error: schError } = await supabase
       .from('collection_schedules')
-      .select('amount')
+      .select('amount, scheduled_date, status')
       .eq('id', id)
       .single();
 
     if (schError) throw schError;
 
-    const targetAmount = Number(schedule.amount);
+    const penalty = getPenalty(schedule.scheduled_date, schedule.status);
+    const targetAmount = Number(schedule.amount) + penalty;
     const amountToSave = Number(collectedAmount) || 0;
 
     let newStatus = 'Pending';
@@ -273,7 +294,7 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     const scheduleIds = payments.map(p => p.scheduleId);
     const { data: schedules, error: schError } = await supabase
       .from('collection_schedules')
-      .select('id, amount')
+      .select('id, amount, loan_id, scheduled_date, status')
       .in('id', scheduleIds);
 
     if (schError) throw schError;
@@ -282,7 +303,8 @@ app.post('/api/collections/batch-pay', async (req, res) => {
       const schedule = schedules.find(s => s.id === payment.scheduleId);
       if (!schedule) return null;
 
-      const targetAmount = Number(schedule.amount);
+      const penalty = getPenalty(schedule.scheduled_date, schedule.status);
+      const targetAmount = Number(schedule.amount) + penalty;
       const amountToSave = Number(payment.collectedAmount) || 0;
 
       let newStatus = 'Pending'; // Or whatever default
@@ -311,7 +333,43 @@ app.post('/api/collections/batch-pay', async (req, res) => {
       )
     );
 
-    res.json({ message: 'Batch payments recorded successfully', successCount: results.length });
+    // --- CHECK FOR LOAN CLOSURE ---
+    // 1. Identify all affected loan IDs
+    const affectedLoanIds = [...new Set(schedules.map(s => s.loan_id).filter(id => id != null))];
+    const closedLoans = [];
+
+    for (const loanId of affectedLoanIds) {
+      // 2. Check if all schedules for this specific loan are now 'Paid'
+      const { data: allLoanSchedules, error: checkError } = await supabase
+        .from('collection_schedules')
+        .select('status')
+        .eq('loan_id', loanId);
+
+      if (!checkError && allLoanSchedules && allLoanSchedules.length > 0) {
+        const isFullyPaid = allLoanSchedules.every(s => s.status === 'Paid');
+        
+        if (isFullyPaid) {
+          // 3. Update loan status to 'CLOSED'
+          const { data: closedLoan, error: closeError } = await supabase
+            .from('loans')
+            .update({ status: 'CLOSED' })
+            .eq('id', loanId)
+            .select('id, member_name, member_id, center_id')
+            .maybeSingle();
+
+          if (!closeError && closedLoan) {
+            closedLoans.push(closedLoan);
+          }
+        }
+      }
+    }
+
+    res.json({ 
+      message: 'Batch payments recorded successfully', 
+      successCount: results.length,
+      closedLoans 
+    });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
