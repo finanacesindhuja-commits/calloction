@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FaUsers, FaSearch, FaCheckCircle, FaExclamationCircle, FaLock, FaCheck } from 'react-icons/fa';
-import API_URL from '../apiConfig';
+import API_URL, { LOAN_APP_URL } from '../apiConfig';
 
 export default function Collections() {
   const [centers, setCenters] = useState([]);
@@ -218,8 +218,9 @@ export default function Collections() {
           alert(`Loan for ${closedLoan.member_name} is completed! Redirecting to new application portal...`);
           
           // Redirect to Loan Application portal with auto-select parameters
-          const loanAppUrl = `http://localhost:5173/centers?auto_center_id=${closedLoan.center_id}&auto_member_id=${closedLoan.member_id}`;
+          const loanAppUrl = `${LOAN_APP_URL}/centers?auto_center_id=${closedLoan.center_id}&auto_member_id=${closedLoan.member_id}`;
           window.location.href = loanAppUrl;
+
           return;
         }
 
