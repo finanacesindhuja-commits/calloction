@@ -1,11 +1,18 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FaUserShield, FaLock, FaEnvelope } from 'react-icons/fa';
 import API_URL from '../apiConfig';
 
 export default function Login() {
   const navigate = useNavigate();
+
+  useEffect(() => {
+    // Clear any existing session data when landing on the login page
+    localStorage.clear();
+  }, []);
+
   const [staffId, setStaffId] = useState('');
+
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);

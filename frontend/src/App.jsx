@@ -3,6 +3,7 @@ import Login from './page/Login';
 import Dashboard from './page/Dashboard';
 import Collections from './page/Collections';
 import Layout from './components/Layout';
+import ProtectedRoute from './components/ProtectedRoute';
 
 function App() {
   return (
@@ -11,8 +12,22 @@ function App() {
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/login" element={<Login />} />
         
-        <Route path="/dashboard" element={<Layout><Dashboard /></Layout>} />
-        <Route path="/collections" element={<Layout><Collections /></Layout>} />
+        <Route 
+          path="/dashboard" 
+          element={
+            <ProtectedRoute>
+              <Layout><Dashboard /></Layout>
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/collections" 
+          element={
+            <ProtectedRoute>
+              <Layout><Collections /></Layout>
+            </ProtectedRoute>
+          } 
+        />
         
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
@@ -21,3 +36,4 @@ function App() {
 }
 
 export default App;
+
