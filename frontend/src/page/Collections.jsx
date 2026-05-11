@@ -102,12 +102,19 @@ export default function Collections() {
   const memberTargets = {}; // Map to store each member's target info for quick access
   
   filteredMembers.forEach((member) => {
-    const memberSchedules = schedules.filter(s => s.loan_id === member.id || s.member_id === member.id);
-    
-    // Find active schedules that are due today OR overdue (arrears)
-    const matchingSchedules = memberSchedules.filter(s => 
-      (s.status === 'Pending' || s.status === 'Approved' || s.status === 'Partial') && s.scheduled_date <= selectedDate
+    // Robust matching: Try ID first, then Name fallback if ID fails
+    const memberSchedules = schedules.filter(s => 
+      (s.loan_id && String(s.loan_id) === String(member.id)) || 
+      (s.member_id && String(s.member_id) === String(member.id)) ||
+      (s.member_name && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase())
     );
+    
+    // Find active schedules that are truly due (outstanding)
+    const matchingSchedules = memberSchedules.filter(s => {
+      const sDate = new Date(s.scheduled_date.split('T')[0].split(' ')[0]);
+      const selDate = new Date(selectedDate);
+      return (s.status === 'Pending' || s.status === 'Approved' || s.status === 'Partial' || s.status === 'Active') && (sDate <= selDate);
+    });
     
     let targetAmount = 0;
     let penaltyAmount = 0;
@@ -130,14 +137,25 @@ export default function Collections() {
   totalCenterTarget = 0;
   centerGlobalTarget = 0; 
   members.forEach(member => {
-    const memberSchedules = schedules.filter(s => s.loan_id === member.id || s.member_id === member.id);
-    const mSchedules = memberSchedules.filter(s => 
-      (s.status === 'Pending' || s.status === 'Approved' || s.status === 'Partial') && s.scheduled_date <= selectedDate
+    // Robust matching: Try ID first, then Name fallback if ID fails
+    const memberSchedules = schedules.filter(s => 
+      (s.loan_id && String(s.loan_id) === String(member.id)) || 
+      (s.member_id && String(s.member_id) === String(member.id)) ||
+      (s.member_name && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase())
     );
+    
+    // Find active schedules that are truly due (outstanding)
+    const mSchedules = memberSchedules.filter(s => {
+      const sDate = new Date(s.scheduled_date.split('T')[0].split(' ')[0]);
+      const selDate = new Date(selectedDate);
+      return (s.status === 'Pending' || s.status === 'Approved' || s.status === 'Partial' || s.status === 'Active') && (sDate <= selDate);
+    });
+    
     let mTarget = 0;
     mSchedules.forEach(s => {
       mTarget += ((Number(s.amount) + (Number(s.penalty) || 0)) - (Number(s.collected_amount) || 0));
     });
+
     totalCenterTarget += mTarget;
   });
   centerGlobalTarget = totalCenterTarget;
@@ -147,8 +165,8 @@ export default function Collections() {
     return sum + memberSchedules.reduce((acc, s) => acc + Number(s.collected_amount || 0), 0);
   }, 0);
 
-  // Filter out members who have no targets for the selected date
-  const membersWithDue = filteredMembers.filter(m => (memberTargets[m.id]?.amount || 0) > 0);
+  // We show ALL members regardless of due status to allow for data corrections
+  const membersWithDue = filteredMembers;
 
   // Tally Calculations
   const totalDraftCollection = Object.values(collectionAmounts).reduce((sum, amount) => sum + (Number(amount) || 0), 0);
@@ -170,8 +188,9 @@ export default function Collections() {
 
     // Waterfall logic for each member's payment
     for (const memberIdStr of Object.keys(collectionAmounts)) {
-       const amountEntered = Number(collectionAmounts[memberIdStr]);
-       if (amountEntered > 0) {
+       const rawValue = collectionAmounts[memberIdStr];
+       if (rawValue !== '') {
+         const amountEntered = Number(rawValue);
          const memberId = Number(memberIdStr);
          // Get all active schedules that are due on or before selected date (including arrears)
          const mSchedules = schedules

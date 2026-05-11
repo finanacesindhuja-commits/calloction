@@ -31,7 +31,7 @@ app.get('/api/health', (req, res) => {
 
 // Utility to calculate dynamic 20 Rs daily late penalty
 const getPenalty = (scheduledDate, scheduleStatus) => {
-  if (scheduleStatus === 'Paid') return 0;
+  if (scheduleStatus === 'Paid' || scheduleStatus === 'Verified' || scheduleStatus === 'Received') return 0;
   const todayStr = new Date().toISOString().split('T')[0];
   const todayObj = new Date(todayStr);
   const schedObj = new Date(scheduledDate);
@@ -222,7 +222,7 @@ app.get('/api/bills/:centerId', async (req, res) => {
       .from('loans')
       .select('member_name, id, amount_sanctioned, loan_app_id, member_photo_url, members(member_no)')
       .eq('center_id', centerId)
-      .eq('status', 'DISBURSED');
+      .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED']);
 
     if (memError) throw memError;
 
@@ -258,7 +258,11 @@ app.post('/api/collections/:id/pay', async (req, res) => {
 
     const penalty = getPenalty(schedule.scheduled_date, schedule.status);
     const targetAmount = Number(schedule.amount) + penalty;
-    const amountToSave = Number(collectedAmount) || 0;
+    
+    // If collectedAmount is not provided (undefined), default to targetAmount (Paid in Full)
+    const amountToSave = (collectedAmount !== undefined && collectedAmount !== null) 
+      ? Number(collectedAmount) 
+      : targetAmount;
 
     let newStatus = 'Pending';
     if (amountToSave > 0 && amountToSave < targetAmount) {

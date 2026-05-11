@@ -50,7 +50,7 @@ export default function Dashboard() {
       const res = await fetch(`${apiUrl}/api/collections/${scheduleId}/pay`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collectedAmount: 0 }) // Backend defaults to full target if not provided or handled
+        body: JSON.stringify({}) // Backend will now default to full target
       });
       if (res.ok) {
         // Refresh data locally
@@ -58,6 +58,8 @@ export default function Dashboard() {
           ...prev,
           schedules: prev.schedules.map(s => s.id === scheduleId ? { ...s, status: 'Paid' } : s)
         }));
+        // Notify sidebar to refresh stats
+        window.dispatchEvent(new Event('collectionSubmitted'));
       }
     } catch (err) { 
       console.error('Payment error:', err); 
@@ -66,10 +68,20 @@ export default function Dashboard() {
   };
 
   // Group schedules by member_id or loan_id for better data access
+  // We use a more robust approach: group by Name if IDs are inconsistent
   const memberSchedules = billData.schedules.reduce((acc, s) => {
-    const key = s.loan_id || s.member_id;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(s);
+    // We try to use ID as primary key, but we also store name-based keys for fallback
+    const idKey = String(s.loan_id || s.member_id || "unknown");
+    const nameKey = s.member_name ? `name_${s.member_name.trim().toLowerCase()}` : null;
+    
+    if (!acc[idKey]) acc[idKey] = [];
+    acc[idKey].push(s);
+    
+    if (nameKey) {
+      if (!acc[nameKey]) acc[nameKey] = [];
+      acc[nameKey].push(s);
+    }
+    
     return acc;
   }, {});
 
@@ -179,7 +191,7 @@ export default function Dashboard() {
                           <p className="text-[11px] text-slate-400 font-bold mt-1">Loan: ₹{Number(member.amount_sanctioned || 0).toLocaleString()}</p>
                           <div className="mt-4 flex justify-between items-center text-xs">
                             <span className="text-slate-500">Fixed Week:</span>
-                            <span className="font-black text-white">₹{(memberSchedules[member.id]?.[0]?.amount || 0).toFixed(0)}</span>
+                            <span className="font-black text-white">₹{((memberSchedules[String(member.id)] || memberSchedules[`name_${member.member_name?.trim().toLowerCase()}`])?.[0]?.amount || 0).toFixed(0)}</span>
                           </div>
                         </button>
                       ))}
@@ -213,7 +225,7 @@ export default function Dashboard() {
 
                       {/* Repayment Grid - ALL WEEKS (No date filter) */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-                        {(memberSchedules[selectedMember.id] || [])
+                        {((memberSchedules[String(selectedMember.id)] || memberSchedules[`name_${selectedMember.member_name?.trim().toLowerCase()}`]) || [])
                           .map((week, idx) => (
                           <div key={week.id} className={`p-6 rounded-3xl border transition-all ${week.status === 'Paid' ? 'bg-emerald-500/5 border-emerald-500/30 ring-1 ring-emerald-500/20' : 'bg-[#0a0f1c] border-white/5 shadow-inner'}`}>
                             <div className="flex justify-between items-start mb-4">
@@ -228,8 +240,8 @@ export default function Dashboard() {
                               )}
                             </div>
                             <div className="mb-6">
-                              <p className="text-[10px] text-slate-500 uppercase font-black mb-1">Amount Due</p>
-                              <h4 className="text-2xl font-black text-white tracking-tighter">₹{Number(week.amount || 0).toLocaleString()}</h4>
+                              <p className="text-[10px] text-slate-500 uppercase font-black mb-1">Remaining Due</p>
+                              <h4 className="text-2xl font-black text-white tracking-tighter">₹{(Number(week.amount || 0) + (Number(week.penalty) || 0) - Number(week.collected_amount || 0)).toLocaleString()}</h4>
                             </div>
                             
                             {week.status === 'Paid' ? (
