@@ -161,10 +161,10 @@ export default function Collections() {
   centerGlobalTarget = totalCenterTarget;
 
   const totalCenterCollected = filteredMembers.reduce((sum, member) => {
-    // Only count collections that were recorded for the selected date
+    // Only count collections that belong to the currently viewed scheduled date
     const memberSchedules = schedules.filter(s => 
       ((s.loan_id === member.id || s.member_id === member.id)) && 
-      (s.scheduled_date === selectedDate || (s.approved_at && s.approved_at.startsWith(selectedDate)))
+      s.scheduled_date === selectedDate
     );
     return sum + memberSchedules.reduce((acc, s) => acc + Number(s.collected_amount || 0), 0);
   }, 0);
