@@ -171,7 +171,10 @@ export default function Dashboard() {
                       <h3 className="text-xs font-black text-white uppercase tracking-widest">2. Select Member of {selectedCenter.name}</h3>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {billData.members.map(member => (
+                      {billData.members.filter(member => {
+                        const mSchedules = memberSchedules[String(member.id)] || memberSchedules[`name_${member.member_name?.trim().toLowerCase()}`] || [];
+                        return mSchedules.some(s => s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
+                      }).map(member => (
                         <button 
                           key={member.id}
                           onClick={() => setSelectedMember(member)}

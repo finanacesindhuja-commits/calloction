@@ -161,12 +161,19 @@ export default function Collections() {
   centerGlobalTarget = totalCenterTarget;
 
   const totalCenterCollected = filteredMembers.reduce((sum, member) => {
-    const memberSchedules = schedules.filter(s => s.loan_id === member.id || s.member_id === member.id);
+    // Only count collections that were recorded for the selected date
+    const memberSchedules = schedules.filter(s => 
+      ((s.loan_id === member.id || s.member_id === member.id)) && 
+      (s.scheduled_date === selectedDate || (s.approved_at && s.approved_at.startsWith(selectedDate)))
+    );
     return sum + memberSchedules.reduce((acc, s) => acc + Number(s.collected_amount || 0), 0);
   }, 0);
 
-  // We show ALL members regardless of due status to allow for data corrections
-  const membersWithDue = filteredMembers;
+  // We show only members who haven't paid yet for this date criteria
+  const membersWithDue = filteredMembers.filter(member => {
+    const target = (memberTargets[member.id]?.amount || 0);
+    return target > 0;
+  });
 
   // Tally Calculations
   const totalDraftCollection = Object.values(collectionAmounts).reduce((sum, amount) => sum + (Number(amount) || 0), 0);

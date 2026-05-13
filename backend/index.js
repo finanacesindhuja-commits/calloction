@@ -151,7 +151,7 @@ app.get('/api/centers', async (req, res) => {
       .from('collection_schedules')
       .select('center_id')
       .eq('scheduled_date', targetDate)
-      .neq('status', 'Paid');
+      .not('status', 'in', '("Paid","Received","Verified")');
 
     // If staff filtering is needed for the initial list discovery
     if (staffId) {
