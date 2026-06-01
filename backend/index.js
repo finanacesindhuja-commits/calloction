@@ -383,12 +383,12 @@ app.post('/api/login', async (req, res) => {
   
   try {
     // Check if the user exists and the password matches in the 'staff' table
-    // Using .ilike for case-insensitive Staff ID matching
+    // Using .eq for fast indexed case-normalized matching
     const { data: staff, error } = await supabase
       .from('staff')
       .select('*')
-      .ilike('staff_id', staffId)
-      .eq('password', password)
+      .eq('staff_id', String(staffId || '').trim().toUpperCase())
+      .eq('password', String(password || '').trim())
       .single();
 
     if (error || !staff) {
