@@ -4,7 +4,36 @@ const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const compression = require('compression');
 const morgan = require('morgan');
+const NodeCache = require('node-cache');
 require('dotenv').config();
+
+const cache = new NodeCache({ stdTTL: 15 });
+const cacheMiddleware = (duration = 15) => (req, res, next) => {
+  if (req.method !== 'GET') return next();
+  const key = req.originalUrl;
+  const cachedResponse = cache.get(key);
+  if (cachedResponse) return res.json(cachedResponse);
+  res.sendResponse = res.json;
+  res.json = (body) => {
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      cache.set(key, body, duration);
+    }
+    res.sendResponse(body);
+  };
+  next();
+};
+
+const activePromises = new Map();
+async function coalesceRequest(key, fetchFunction) {
+  if (activePromises.has(key)) {
+    return activePromises.get(key);
+  }
+  const promise = fetchFunction().finally(() => {
+    activePromises.delete(key);
+  });
+  activePromises.set(key, promise);
+  return promise;
+}
 
 const app = express();
 app.use(compression());
@@ -43,155 +72,167 @@ const getPenalty = (scheduledDate, scheduleStatus) => {
 };
 
 // Stats for RO Dashboard
-app.get('/api/stats', async (req, res) => {
+app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
   try {
     const { staffId } = req.query;
-    const today = new Date().toISOString().split('T')[0];
+    const cacheKey = `/api/stats?staffId=${staffId || ''}`;
     
-    // Step 0: Identify allowed centers if staffId is provided
-    let allowedCenterIds = null;
-    if (staffId) {
-      const { data: staffCenters } = await supabase
-        .from('centers')
-        .select('id')
-        .ilike('staff_id', staffId);
-      allowedCenterIds = (staffCenters || []).map(c => c.id);
+    const result = await coalesceRequest(cacheKey, async () => {
+      const today = new Date().toISOString().split('T')[0];
       
-      if (allowedCenterIds.length === 0) {
-        return res.json({ targetToday: 0, collectedToday: 0, activeCenters: 0, efficiency: 0 });
-      }
-    }
-
-    // 1. Current Target Collection (Dues up to today)
-    let schQuery = supabase
-      .from('collection_schedules')
-      .select('amount, status, collected_amount, loan_id, member_id, scheduled_date, approved_at, center_id')
-      .order('scheduled_date', { ascending: true });
-
-    if (allowedCenterIds) {
-      schQuery = schQuery.in('center_id', allowedCenterIds);
-    }
-
-    const { data: allSchedules, error: schError } = await schQuery;
-
-    if (schError) throw schError;
-
-    let targetToday = 0; // Remaining total due as of RIGHT NOW
-    let strictlyCollectedToday = 0; // Cash physically collected today
-    let startOfDayTarget = 0; // What was due when the RO woke up today
-
-    (allSchedules || []).forEach(s => {
-      if (s.scheduled_date <= today) {
-        const penalty = getPenalty(s.scheduled_date, s.status);
-        const fullAmount = (Number(s.amount) || 0) + penalty;
-        const collected = Number(s.collected_amount) || 0;
-        const due = fullAmount - collected;
+      // Step 0: Identify allowed centers if staffId is provided
+      let allowedCenterIds = null;
+      if (staffId) {
+        const { data: staffCenters } = await supabase
+          .from('centers')
+          .select('id')
+          .ilike('staff_id', staffId);
+        allowedCenterIds = (staffCenters || []).map(c => c.id);
         
-        // 1. Calculate remaining target currently
-        if (s.status !== 'Paid') {
-          targetToday += due > 0 ? due : 0;
-        }
-
-        // 2. Calculate Efficiency strictly for TODAY's efforts
-        const approvedDate = s.approved_at ? s.approved_at.split('T')[0] : null;
-        
-        if (approvedDate === today) {
-          // If a payment was made TODAY, the target this morning included what they just paid
-          strictlyCollectedToday += collected;
-          startOfDayTarget += (due > 0 ? due : 0) + collected;
-        } else if (s.status !== 'Paid') {
-          // If no payment was made today, whatever is due right now was also due this morning
-          startOfDayTarget += due > 0 ? due : 0;
+        if (allowedCenterIds.length === 0) {
+          return { targetToday: 0, collectedToday: 0, activeCenters: 0, efficiency: 0 };
         }
       }
+
+      // 1. Current Target Collection (Dues up to today)
+      let schQuery = supabase
+        .from('collection_schedules')
+        .select('amount, status, collected_amount, loan_id, member_id, scheduled_date, approved_at, center_id')
+        .order('scheduled_date', { ascending: true });
+
+      if (allowedCenterIds) {
+        schQuery = schQuery.in('center_id', allowedCenterIds);
+      }
+
+      const { data: allSchedules, error: schError } = await schQuery;
+
+      if (schError) throw schError;
+
+      let targetToday = 0; // Remaining total due as of RIGHT NOW
+      let strictlyCollectedToday = 0; // Cash physically collected today
+      let startOfDayTarget = 0; // What was due when the RO woke up today
+
+      (allSchedules || []).forEach(s => {
+        if (s.scheduled_date <= today) {
+          const penalty = getPenalty(s.scheduled_date, s.status);
+          const fullAmount = (Number(s.amount) || 0) + penalty;
+          const collected = Number(s.collected_amount) || 0;
+          const due = fullAmount - collected;
+          
+          // 1. Calculate remaining target currently
+          if (s.status !== 'Paid') {
+            targetToday += due > 0 ? due : 0;
+          }
+
+          // 2. Calculate Efficiency strictly for TODAY's efforts
+          const approvedDate = s.approved_at ? s.approved_at.split('T')[0] : null;
+          
+          if (approvedDate === today) {
+            // If a payment was made TODAY, the target this morning included what they just paid
+            strictlyCollectedToday += collected;
+            startOfDayTarget += (due > 0 ? due : 0) + collected;
+          } else if (s.status !== 'Paid') {
+            // If no payment was made today, whatever is due right now was also due this morning
+            startOfDayTarget += due > 0 ? due : 0;
+          }
+        }
+      });
+
+      const efficiency = startOfDayTarget > 0 
+        ? Math.round((strictlyCollectedToday / startOfDayTarget) * 100) 
+        : 0;
+
+      // We override collectedToday to reflect today's actual cash collection for the Sidebar UI
+      let collectedToday = strictlyCollectedToday;
+
+      // 2. Active Centers Count
+      let loanQuery = supabase
+        .from('loans')
+        .select('center_id')
+        .eq('status', 'DISBURSED');
+
+      if (allowedCenterIds) {
+        loanQuery = loanQuery.in('center_id', allowedCenterIds);
+      }
+
+      const { data: activeLoans, error: loanError } = await loanQuery;
+
+      if (loanError) throw loanError;
+      const activeCenters = [...new Set(activeLoans.map(l => l.center_id))].length;
+
+      return {
+        targetToday,
+        collectedToday,
+        activeCenters,
+        efficiency
+      };
     });
 
-    const efficiency = startOfDayTarget > 0 
-      ? Math.round((strictlyCollectedToday / startOfDayTarget) * 100) 
-      : 0;
-
-    // We override collectedToday to reflect today's actual cash collection for the Sidebar UI
-    let collectedToday = strictlyCollectedToday;
-
-    // 2. Active Centers Count
-    let loanQuery = supabase
-      .from('loans')
-      .select('center_id')
-      .eq('status', 'DISBURSED');
-
-    if (allowedCenterIds) {
-      loanQuery = loanQuery.in('center_id', allowedCenterIds);
-    }
-
-    const { data: activeLoans, error: loanError } = await loanQuery;
-
-    if (loanError) throw loanError;
-    const activeCenters = [...new Set(activeLoans.map(l => l.center_id))].length;
-
-    res.json({
-      targetToday,
-      collectedToday,
-      activeCenters,
-      efficiency
-    });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET Centers with Active Collections
-app.get('/api/centers', async (req, res) => {
+app.get('/api/centers', cacheMiddleware(15), async (req, res) => {
   try {
     const { staffId, date } = req.query;
-    const today = new Date().toISOString().split('T')[0];
-    const targetDate = date || today;
-    
-    // Get distinct center IDs that have pending/partial schedules for the target date
-    let schQuery = supabase
-      .from('collection_schedules')
-      .select('center_id')
-      .eq('scheduled_date', targetDate)
-      .not('status', 'in', '("Paid","Received","Verified")');
+    const cacheKey = `/api/centers?staffId=${staffId || ''}&date=${date || ''}`;
 
-    // If staff filtering is needed for the initial list discovery
-    if (staffId) {
-      // We can either filter schedules by centers assigned to staff
-      // OR fetch schedules first and then filter centers later.
-      // Let's optimize by getting staff centers first.
-      const { data: staffCenters } = await supabase
-        .from('centers')
-        .select('id')
-        .ilike('staff_id', staffId);
-      const staffCenterIds = (staffCenters || []).map(c => c.id);
+    const result = await coalesceRequest(cacheKey, async () => {
+      const today = new Date().toISOString().split('T')[0];
+      const targetDate = date || today;
       
-      if (staffCenterIds.length === 0) return res.json([]);
-      schQuery = schQuery.in('center_id', staffCenterIds);
-    }
+      // Get distinct center IDs that have pending/partial schedules for the target date
+      let schQuery = supabase
+        .from('collection_schedules')
+        .select('center_id')
+        .eq('scheduled_date', targetDate)
+        .not('status', 'in', '("Paid","Received","Verified")');
 
-    const { data: pendingSchedules, error: schError } = await schQuery;
+      // If staff filtering is needed for the initial list discovery
+      if (staffId) {
+        // We can either filter schedules by centers assigned to staff
+        // OR fetch schedules first and then filter centers later.
+        // Let's optimize by getting staff centers first.
+        const { data: staffCenters } = await supabase
+          .from('centers')
+          .select('id')
+          .ilike('staff_id', staffId);
+        const staffCenterIds = (staffCenters || []).map(c => c.id);
+        
+        if (staffCenterIds.length === 0) return [];
+        schQuery = schQuery.in('center_id', staffCenterIds);
+      }
 
-    if (schError) throw schError;
+      const { data: pendingSchedules, error: schError } = await schQuery;
 
-    const centerIds = [...new Set(pendingSchedules.map(s => s.center_id).filter(id => id != null))];
+      if (schError) throw schError;
 
-    if (centerIds.length === 0) {
-      return res.json([]);
-    }
+      const centerIds = [...new Set(pendingSchedules.map(s => s.center_id).filter(id => id != null))];
 
-    let centerQuery = supabase
-      .from('centers')
-      .select('*')
-      .in('id', centerIds)
-      .order('name', { ascending: true });
+      if (centerIds.length === 0) {
+        return [];
+      }
+
+      let centerQuery = supabase
+        .from('centers')
+        .select('*')
+        .in('id', centerIds)
+        .order('name', { ascending: true });
+      
+      if (staffId) {
+        centerQuery = centerQuery.ilike('staff_id', staffId);
+      }
+
+      const { data: centers, error: centerError } = await centerQuery;
+      
+      if (centerError) throw centerError;
+      return centers || [];
+    });
     
-    if (staffId) {
-      centerQuery = centerQuery.ilike('staff_id', staffId);
-    }
-
-    const { data: centers, error: centerError } = await centerQuery;
-    
-    if (centerError) throw centerError;
-    res.json(centers || []);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

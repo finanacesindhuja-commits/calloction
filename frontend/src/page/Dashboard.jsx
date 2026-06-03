@@ -18,6 +18,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchCenters();
+    const interval = setInterval(() => {
+      fetchCenters();
+    }, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const fetchCenters = async () => {
@@ -95,7 +99,13 @@ export default function Dashboard() {
               <FaCheck className="text-white text-2xl" />
             </div>
             <div>
-              <p className="text-[10px] text-blue-400 font-black uppercase tracking-[0.2em] mb-0.5">Collection Terminal</p>
+              <div className="flex items-center gap-3 mb-0.5">
+                <p className="text-[10px] text-blue-400 font-black uppercase tracking-[0.2em]">Collection Terminal</p>
+                <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span className="text-[8px] font-bold text-emerald-500 tracking-wider uppercase">LIVE</span>
+                </div>
+              </div>
               <h1 className="text-xl font-black text-white tracking-tight">RO Dashboard</h1>
             </div>
           </div>
