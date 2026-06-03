@@ -105,7 +105,6 @@ export default function Collections() {
     // Robust matching: Try ID first, then Name fallback if ID fails
     const memberSchedules = schedules.filter(s => 
       (s.loan_id && String(s.loan_id) === String(member.id)) || 
-      (s.member_id && String(s.member_id) === String(member.id)) ||
       (s.member_name && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase())
     );
     
@@ -140,7 +139,6 @@ export default function Collections() {
     // Robust matching: Try ID first, then Name fallback if ID fails
     const memberSchedules = schedules.filter(s => 
       (s.loan_id && String(s.loan_id) === String(member.id)) || 
-      (s.member_id && String(s.member_id) === String(member.id)) ||
       (s.member_name && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase())
     );
     
@@ -163,7 +161,7 @@ export default function Collections() {
   const totalCenterCollected = filteredMembers.reduce((sum, member) => {
     // Only count collections that belong to the currently viewed scheduled date
     const memberSchedules = schedules.filter(s => 
-      ((s.loan_id === member.id || s.member_id === member.id)) && 
+      (s.loan_id === member.id || (s.member_name && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase())) && 
       s.scheduled_date === selectedDate
     );
     return sum + memberSchedules.reduce((acc, s) => acc + Number(s.collected_amount || 0), 0);
@@ -201,7 +199,7 @@ export default function Collections() {
          const memberId = Number(memberIdStr);
          // Get all active schedules that are due on or before selected date (including arrears)
          const mSchedules = schedules
-            .filter(s => (s.loan_id === memberId || s.member_id === memberId) && s.status !== 'Paid' && s.scheduled_date <= selectedDate)
+            .filter(s => s.loan_id === memberId && s.status !== 'Paid' && s.scheduled_date <= selectedDate)
             .sort((a,b) => new Date(a.scheduled_date) - new Date(b.scheduled_date));
             
          let remainingToAllocate = amountEntered;
