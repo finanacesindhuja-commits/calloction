@@ -21,6 +21,9 @@ export default function Collections() {
     2000: '', 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: ''
   });
 
+  // Custom modal notification state
+  const [notification, setNotification] = useState(null);
+
   useEffect(() => {
     fetchCenters();
   }, []);
@@ -231,7 +234,7 @@ export default function Collections() {
     }
 
     if (paymentsToProcess.length === 0) {
-      alert('No payments mapped. Please check the amounts.');
+      setNotification({ type: 'error', message: 'No payments mapped. Please check the amounts.' });
       setIsSubmitting(false);
       return;
     }
@@ -247,21 +250,28 @@ export default function Collections() {
         
         if (data.closedLoans && data.closedLoans.length > 0) {
           const closedLoan = data.closedLoans[0]; // Take the first one for the redirect flow
-          alert(`Loan for ${closedLoan.member_name} is completed! Redirecting to new application portal...`);
-          
-          // Redirect to Loan Application portal with auto-select parameters
-          const loanAppUrl = `${LOAN_APP_URL}/centers?auto_center_id=${closedLoan.center_id}&auto_member_id=${closedLoan.member_id}`;
-          window.location.href = loanAppUrl;
-
+          setNotification({
+            type: 'info',
+            message: `Loan for ${closedLoan.member_name} is completed! Redirecting to new application portal...`,
+            action: () => {
+              const loanAppUrl = `${LOAN_APP_URL}/centers?auto_center_id=${closedLoan.center_id}&auto_member_id=${closedLoan.member_id}`;
+              window.location.href = loanAppUrl;
+            }
+          });
           return;
         }
 
-        alert('Collections tallied and submitted perfectly!');
-        window.dispatchEvent(new Event('collectionSubmitted'));
-        setStep(1); // Reset to step 1
-        handleCenterChange(selectedCenter, selectedDate); // refresh data
+        setNotification({
+          type: 'success',
+          message: 'Collections tallied and submitted perfectly!',
+          action: () => {
+            window.dispatchEvent(new Event('collectionSubmitted'));
+            setStep(1); // Reset to step 1
+            handleCenterChange(selectedCenter, selectedDate); // refresh data
+          }
+        });
       } else {
-        alert('Failed to submit collections');
+        setNotification({ type: 'error', message: 'Failed to submit collections' });
       }
     } catch (err) {
       console.error(err);
@@ -550,6 +560,56 @@ export default function Collections() {
           <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-slate-800 mb-6 text-4xl">🔎</div>
           <h2 className="text-2xl font-bold text-white/60 mb-2 uppercase">Ready to Collect</h2>
           <p className="text-white/30 max-w-sm mx-auto">Select a collection date and active center to begin inputting cash counts.</p>
+        </div>
+      )}
+      {/* Custom premium modal notification instead of browser alert */}
+      {notification && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="bg-[#0f172a] border border-white/10 rounded-[2rem] p-8 max-w-md w-full shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-300">
+            {/* Top color highlight line */}
+            <div className={`absolute top-0 left-0 w-full h-1.5 ${
+              notification.type === 'success' ? 'bg-gradient-to-r from-emerald-500 to-teal-500' :
+              notification.type === 'error' ? 'bg-gradient-to-r from-red-500 to-rose-500' :
+              'bg-gradient-to-r from-blue-500 to-indigo-500'
+            }`}></div>
+
+            <div className="text-center mt-4">
+              <div className={`mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-6 shadow-inner ${
+                notification.type === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                notification.type === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+              }`}>
+                {notification.type === 'success' && <FaCheckCircle size={32} />}
+                {notification.type === 'error' && <FaExclamationCircle size={32} />}
+                {notification.type === 'info' && <FaCheckCircle size={32} />}
+              </div>
+
+              <h3 className="text-xl font-bold text-white mb-3 tracking-tight">
+                {notification.type === 'success' ? 'Success' :
+                 notification.type === 'error' ? 'Oops!' :
+                 'Notice'}
+              </h3>
+              
+              <p className="text-slate-400 text-sm leading-relaxed mb-8">
+                {notification.message}
+              </p>
+
+              <button
+                onClick={() => {
+                  const action = notification.action;
+                  setNotification(null);
+                  if (action) action();
+                }}
+                className={`w-full py-4 rounded-xl text-xs font-black uppercase tracking-widest text-slate-900 transition-all active:scale-95 shadow-lg ${
+                  notification.type === 'success' ? 'bg-emerald-500 hover:bg-emerald-400 shadow-emerald-500/10' :
+                  notification.type === 'error' ? 'bg-red-500 hover:bg-red-400 shadow-red-500/10' :
+                  'bg-blue-500 hover:bg-blue-400 shadow-blue-500/10'
+                }`}
+              >
+                Okay
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
