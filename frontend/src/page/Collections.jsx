@@ -112,7 +112,8 @@ export default function Collections() {
     const matchingSchedules = memberSchedules.filter(s => {
       const sDate = new Date(s.scheduled_date.split('T')[0].split(' ')[0]);
       const selDate = new Date(selectedDate);
-      return (s.status === 'Pending' || s.status === 'Approved' || s.status === 'Partial' || s.status === 'Active') && (sDate <= selDate);
+      const cleanStatus = s.status ? String(s.status).trim() : '';
+      return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate <= selDate);
     });
     
     let targetAmount = 0;
@@ -146,7 +147,8 @@ export default function Collections() {
     const mSchedules = memberSchedules.filter(s => {
       const sDate = new Date(s.scheduled_date.split('T')[0].split(' ')[0]);
       const selDate = new Date(selectedDate);
-      return (s.status === 'Pending' || s.status === 'Approved' || s.status === 'Partial' || s.status === 'Active') && (sDate <= selDate);
+      const cleanStatus = s.status ? String(s.status).trim() : '';
+      return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate <= selDate);
     });
     
     let mTarget = 0;
@@ -203,7 +205,8 @@ export default function Collections() {
              .filter(s => {
                const isMatch = (s.loan_id && String(s.loan_id) === String(memberId)) ||
                  (!s.loan_id && s.member_name && member && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase());
-               return isMatch && s.status !== 'Paid' && s.scheduled_date <= selectedDate;
+               const cleanStatus = s.status ? String(s.status).trim() : '';
+               return isMatch && cleanStatus !== 'Paid' && s.scheduled_date <= selectedDate;
              })
              .sort((a,b) => new Date(a.scheduled_date) - new Date(b.scheduled_date));
             

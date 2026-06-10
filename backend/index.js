@@ -60,7 +60,8 @@ app.get('/api/health', (req, res) => {
 
 // Utility to calculate dynamic 20 Rs daily late penalty
 const getPenalty = (scheduledDate, scheduleStatus) => {
-  if (scheduleStatus === 'Paid' || scheduleStatus === 'Verified' || scheduleStatus === 'Received') return 0;
+  const cleanStatus = scheduleStatus ? String(scheduleStatus).trim() : '';
+  if (cleanStatus === 'Paid' || cleanStatus === 'Verified' || cleanStatus === 'Received') return 0;
   const todayStr = new Date().toISOString().split('T')[0];
   const todayObj = new Date(todayStr);
   const schedObj = new Date(scheduledDate);
