@@ -5,7 +5,7 @@ const path = require('path');
 const compression = require('compression');
 const morgan = require('morgan');
 const NodeCache = require('node-cache');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const cache = new NodeCache({ stdTTL: 15 });
 const cacheMiddleware = (duration = 15) => (req, res, next) => {
