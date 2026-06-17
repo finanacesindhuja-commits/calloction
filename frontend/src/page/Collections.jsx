@@ -88,30 +88,14 @@ export default function Collections() {
     }));
   };
 
-  // We show ALL members of the center.
-  // The user requested that all members must be visible on the list.
-  const activeMembersForDate = members;
-
-  const filteredMembers = activeMembersForDate.filter(m => 
-    m.member_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    m.id?.toString().includes(searchTerm) ||
-    m.member_no?.toString().toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  // Overall calculations for the Center Date View
-  let totalCenterTarget = 0;
-  let centerGlobalTarget = 0;
-  
   const memberTargets = {}; // Map to store each member's target info for quick access
   
-  filteredMembers.forEach((member) => {
-    // Robust matching: Try ID first, then Name fallback if ID fails
+  members.forEach((member) => {
     const memberSchedules = schedules.filter(s => 
       (s.loan_id && String(s.loan_id) === String(member.id)) || 
       (s.member_name && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase())
     );
     
-    // Find active schedules that are truly due (outstanding)
     const matchingSchedules = memberSchedules.filter(s => {
       const sDate = new Date(s.scheduled_date.split('T')[0].split(' ')[0]);
       const selDate = new Date(selectedDate);
@@ -136,9 +120,19 @@ export default function Collections() {
     };
   });
 
-  // Calculate full center targets (static, unaffected by search)
-  totalCenterTarget = 0;
-  centerGlobalTarget = 0; 
+  // Only show members who actually have a pending target for the selected date
+  const activeMembersForDate = members.filter(m => memberTargets[m.id]?.amount > 0);
+
+  const filteredMembers = activeMembersForDate.filter(m => 
+    m.member_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    m.id?.toString().includes(searchTerm) ||
+    m.member_no?.toString().toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // Overall calculations for the Center Date View
+  let totalCenterTarget = 0;
+  let centerGlobalTarget = 0;
+  
   members.forEach(member => {
     // Robust matching: Try ID first, then Name fallback if ID fails
     const memberSchedules = schedules.filter(s => 
@@ -266,8 +260,13 @@ export default function Collections() {
           message: 'Collections tallied and submitted perfectly!',
           action: () => {
             window.dispatchEvent(new Event('collectionSubmitted'));
-            setStep(1); // Reset to step 1
-            handleCenterChange(selectedCenter, selectedDate); // refresh data
+            setStep(1);
+            // Reset center view so user sees fresh center list
+            setSelectedCenter('');
+            setMembers([]);
+            setSchedules([]);
+            setCollectionAmounts({});
+            fetchCenters(selectedDate); // Refresh centers list to reflect paid status
           }
         });
       } else {
