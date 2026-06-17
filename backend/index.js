@@ -262,7 +262,7 @@ app.get('/api/bills/:centerId', async (req, res) => {
     // 2. Get members of this center
     const { data: members, error: memError } = await supabase
       .from('loans')
-      .select('member_name, id, amount_sanctioned, loan_app_id, member_photo_url, members(member_no)')
+      .select('member_name, id, amount_sanctioned, member_photo_url, members(member_no)')
       .eq('center_id', centerId)
       .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED']);
 
@@ -270,8 +270,7 @@ app.get('/api/bills/:centerId', async (req, res) => {
 
     const formattedMembers = (members || []).map(m => ({
       ...m,
-      member_no: m.members?.member_no || null,
-      loan_app_id: m.loan_app_id || null
+      member_no: m.members?.member_no || null
     }));
 
     res.json({
