@@ -97,10 +97,9 @@ export default function Collections() {
     );
     
     const matchingSchedules = memberSchedules.filter(s => {
-      const sDate = new Date(s.scheduled_date.split('T')[0].split(' ')[0]);
-      const selDate = new Date(selectedDate);
+      const sDate = s.scheduled_date.split('T')[0].split(' ')[0];
       const cleanStatus = s.status ? String(s.status).trim() : '';
-      return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate <= selDate);
+      return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate === selectedDate);
     });
     
     let targetAmount = 0;
@@ -142,10 +141,9 @@ export default function Collections() {
     
     // Find active schedules that are truly due (outstanding)
     const mSchedules = memberSchedules.filter(s => {
-      const sDate = new Date(s.scheduled_date.split('T')[0].split(' ')[0]);
-      const selDate = new Date(selectedDate);
+      const sDate = s.scheduled_date.split('T')[0].split(' ')[0];
       const cleanStatus = s.status ? String(s.status).trim() : '';
-      return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate <= selDate);
+      return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate === selectedDate);
     });
     
     let mTarget = 0;
