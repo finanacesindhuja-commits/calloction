@@ -75,7 +75,7 @@ export default function Dashboard() {
             String(s.loan_id || s.member_id || '') === memberIdKey ||
             (s.member_name?.trim().toLowerCase() === selectedMember.member_name?.trim().toLowerCase())
           );
-          const hasTodayPending = mSchedules.some(s => s.scheduled_date === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
+          const hasTodayPending = mSchedules.some(s => s.scheduled_date?.split('T')[0].split(' ')[0] === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
           if (!hasTodayPending) {
             // This member's today bill is done — go back to member list
             setSelectedMember(null);
@@ -201,7 +201,7 @@ export default function Dashboard() {
                       {billData.members.filter(member => {
                         const mSchedules = memberSchedules[String(member.id)] || memberSchedules[`name_${member.member_name?.trim().toLowerCase()}`] || [];
                         // Show only members who have TODAY's bill still pending
-                        return mSchedules.some(s => s.scheduled_date === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
+                        return mSchedules.some(s => s.scheduled_date?.split('T')[0].split(' ')[0] === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
                       }).map(member => (
                         <button 
                           key={member.id}
