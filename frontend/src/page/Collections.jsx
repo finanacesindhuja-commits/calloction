@@ -196,12 +196,12 @@ export default function Collections() {
           const memberId = Number(memberIdStr);
           const member = members.find(m => m.id === memberId);
           // Get all active schedules that are due on or before selected date (including arrears)
-          const mSchedules = schedules
+           const mSchedules = schedules
              .filter(s => {
                const isMatch = (s.loan_id && String(s.loan_id) === String(memberId)) ||
                  (!s.loan_id && s.member_name && member && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase());
                const cleanStatus = s.status ? String(s.status).trim() : '';
-               return isMatch && cleanStatus !== 'Paid' && s.scheduled_date <= selectedDate;
+               return isMatch && cleanStatus !== 'Paid' && cleanStatus !== 'Received' && cleanStatus !== 'Verified' && s.scheduled_date.split('T')[0].split(' ')[0] === selectedDate;
              })
              .sort((a,b) => new Date(a.scheduled_date) - new Date(b.scheduled_date));
             
