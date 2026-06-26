@@ -189,7 +189,7 @@ app.get('/api/centers', cacheMiddleware(15), async (req, res) => {
       let schQuery = supabase
         .from('collection_schedules')
         .select('center_id')
-        .lte('scheduled_date', targetDate)
+        .eq('scheduled_date', targetDate)
         .not('status', 'in', '("Paid","Received","Verified")');
 
       // If staff filtering is needed for the initial list discovery

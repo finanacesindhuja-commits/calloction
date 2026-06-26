@@ -15,6 +15,7 @@ export default function Dashboard() {
   const [processing, setProcessing] = useState(false);
 
   const apiUrl = API_URL;
+  const today = new Date().toISOString().split('T')[0];
 
   useEffect(() => {
     fetchCenters();
@@ -58,12 +59,28 @@ export default function Dashboard() {
       });
       if (res.ok) {
         // Refresh data locally
+        const updatedSchedules = billData.schedules.map(s => s.id === scheduleId ? { ...s, status: 'Paid' } : s);
         setBillData(prev => ({
           ...prev,
-          schedules: prev.schedules.map(s => s.id === scheduleId ? { ...s, status: 'Paid' } : s)
+          schedules: updatedSchedules
         }));
         // Notify sidebar to refresh stats
         window.dispatchEvent(new Event('collectionSubmitted'));
+
+        // Auto-go back to member list if today's bill for this member is now paid
+        if (selectedMember) {
+          const memberIdKey = String(selectedMember.id);
+          const memberNameKey = `name_${selectedMember.member_name?.trim().toLowerCase()}`;
+          const mSchedules = updatedSchedules.filter(s =>
+            String(s.loan_id || s.member_id || '') === memberIdKey ||
+            (s.member_name?.trim().toLowerCase() === selectedMember.member_name?.trim().toLowerCase())
+          );
+          const hasTodayPending = mSchedules.some(s => s.scheduled_date === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
+          if (!hasTodayPending) {
+            // This member's today bill is done — go back to member list
+            setSelectedMember(null);
+          }
+        }
       }
     } catch (err) { 
       console.error('Payment error:', err); 
@@ -183,7 +200,8 @@ export default function Dashboard() {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                       {billData.members.filter(member => {
                         const mSchedules = memberSchedules[String(member.id)] || memberSchedules[`name_${member.member_name?.trim().toLowerCase()}`] || [];
-                        return mSchedules.some(s => s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
+                        // Show only members who have TODAY's bill still pending
+                        return mSchedules.some(s => s.scheduled_date === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
                       }).map(member => (
                         <button 
                           key={member.id}
