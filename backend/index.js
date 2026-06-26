@@ -113,6 +113,12 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
       let strictlyCollectedToday = 0; // Cash physically collected today
       let startOfDayTarget = 0; // What was due when the RO woke up today
 
+      const { data: allCentersData } = await supabase.from('centers').select('id, name');
+      const centerMap = {};
+      (allCentersData || []).forEach(c => centerMap[c.id] = c.name);
+
+      let centerTargets = {};
+
       (allSchedules || []).forEach(s => {
         if (s.scheduled_date <= today) {
           const penalty = getPenalty(s.scheduled_date, s.status);
@@ -122,7 +128,13 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
           
           // 1. Calculate remaining target currently
           if (s.status !== 'Paid') {
-            targetToday += due > 0 ? due : 0;
+            const dueAmount = due > 0 ? due : 0;
+            targetToday += dueAmount;
+            
+            if (dueAmount > 0 && s.center_id) {
+              if (!centerTargets[s.center_id]) centerTargets[s.center_id] = 0;
+              centerTargets[s.center_id] += dueAmount;
+            }
           }
 
           // 2. Calculate Efficiency strictly for TODAY's efforts
@@ -161,11 +173,18 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
       if (loanError) throw loanError;
       const activeCenters = [...new Set(activeLoans.map(l => l.center_id))].length;
 
+      const centerDues = Object.keys(centerTargets).map(id => ({
+        id,
+        name: centerMap[id] || 'Unknown Center',
+        due: centerTargets[id]
+      })).sort((a, b) => a.name.localeCompare(b.name));
+
       return {
         targetToday,
         collectedToday,
         activeCenters,
-        efficiency
+        efficiency,
+        centerDues
       };
     });
 

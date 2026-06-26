@@ -12,7 +12,7 @@ export default function Layout({ children }) {
   const staffId = localStorage.getItem('staffId');
   const userName = localStorage.getItem('name');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [stats, setStats] = useState({ targetToday: 0, activeCenters: 0, efficiency: 0 });
+  const [stats, setStats] = useState({ targetToday: 0, activeCenters: 0, efficiency: 0, centerDues: [] });
   const [draftSubtracted, setDraftSubtracted] = useState(0);
 
   useEffect(() => {
@@ -107,9 +107,9 @@ export default function Layout({ children }) {
         </nav>
 
         {/* Quick Stats in Sidebar */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
           <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Today's Performance</p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 mb-6">
             <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-4 flex flex-col gap-1 transition-all hover:border-blue-500/30">
               <div className="flex items-center gap-2 text-blue-400 mb-1">
                 <FaFileInvoiceDollar size={12} />
@@ -139,6 +139,23 @@ export default function Layout({ children }) {
               <p className="text-sm font-black text-white">{stats.efficiency || 0}%</p>
             </div>
           </div>
+
+          {/* Center Dues List */}
+          {stats.centerDues && stats.centerDues.length > 0 && (
+            <div>
+              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Pending By Center</p>
+              <div className="space-y-2">
+                {stats.centerDues.map(center => (
+                  <div key={center.id} className="bg-white/[0.02] border border-white/5 rounded-xl p-3 flex justify-between items-center transition-all hover:border-blue-500/30">
+                    <p className="text-xs font-bold text-slate-300 truncate max-w-[150px]">{center.name}</p>
+                    <div className="flex flex-col items-end">
+                      <p className="text-xs font-black text-white">₹{center.due.toLocaleString()}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Bottom Actions */}
