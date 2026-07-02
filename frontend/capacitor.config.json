@@ -1,0 +1,9 @@
+{
+  "appId": "com.sindhuja.collection",
+  "appName": "colloct wish",
+  "webDir": "dist",
+  "server": {
+    "cleartext": true,
+    "androidScheme": "https"
+  }
+}

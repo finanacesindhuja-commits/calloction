@@ -40,11 +40,35 @@ app.use(compression());
 app.use(morgan('dev'));
 const PORT = process.env.PORT || 5007;
 
-const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
+// Android Capacitor apps send requests from these origins
+const androidOrigins = [
+  'capacitor://localhost',
+  'https://localhost',
+  'http://localhost',
+];
+
+const envOrigin = process.env.ALLOWED_ORIGIN || '';
+
+// Build allowed origins list
+const allowedOrigins = [
+  ...androidOrigins,
+  ...(envOrigin && envOrigin !== '*' ? [envOrigin] : []),
+];
+
 app.use(cors({
-  origin: allowedOrigin,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    // Allow if origin is in our list
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow if env is wildcard
+    if (!envOrigin || envOrigin === '*') return callback(null, true);
+    // Block unknown origins
+    callback(new Error('CORS: Origin not allowed - ' + origin));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
 
