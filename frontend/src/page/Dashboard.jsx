@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { 
   FaUserCircle, FaHistory, FaUsers, FaArrowRight, FaArrowLeft, 
   FaPrint, FaCheckCircle, FaClock, FaRegCheckCircle, FaFingerprint,
-  FaLock, FaCheck
+  FaLock, FaCheck, FaTrophy
 } from 'react-icons/fa';
 import API_URL from '../apiConfig';
 
@@ -13,6 +13,7 @@ export default function Dashboard() {
   const [billData, setBillData] = useState({ schedules: [], members: [] });
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [closedLoanIds, setClosedLoanIds] = useState(new Set()); // track CLOSED loans
 
   const apiUrl = API_URL;
   const today = new Date().toISOString().split('T')[0];
@@ -58,6 +59,7 @@ export default function Dashboard() {
         body: JSON.stringify({}) // Backend will now default to full target
       });
       if (res.ok) {
+        const responseData = await res.json();
         // Refresh data locally
         const updatedSchedules = billData.schedules.map(s => s.id === scheduleId ? { ...s, status: 'Paid' } : s);
         setBillData(prev => ({
@@ -67,17 +69,20 @@ export default function Dashboard() {
         // Notify sidebar to refresh stats
         window.dispatchEvent(new Event('collectionSubmitted'));
 
+        // If loan is now CLOSED, mark it
+        if (responseData.closedLoan) {
+          setClosedLoanIds(prev => new Set([...prev, responseData.closedLoan.id]));
+        }
+
         // Auto-go back to member list if today's bill for this member is now paid
         if (selectedMember) {
           const memberIdKey = String(selectedMember.id);
-          const memberNameKey = `name_${selectedMember.member_name?.trim().toLowerCase()}`;
           const mSchedules = updatedSchedules.filter(s =>
             String(s.loan_id || s.member_id || '') === memberIdKey ||
             (s.member_name?.trim().toLowerCase() === selectedMember.member_name?.trim().toLowerCase())
           );
           const hasTodayPending = mSchedules.some(s => s.scheduled_date?.split('T')[0].split(' ')[0] === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
           if (!hasTodayPending) {
-            // This member's today bill is done — go back to member list
             setSelectedMember(null);
           }
         }
@@ -198,34 +203,56 @@ export default function Dashboard() {
                       <h3 className="text-xs font-black text-white uppercase tracking-widest">2. Select Member of {selectedCenter.name}</h3>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {billData.members.filter(member => {
+                      {billData.members.map(member => {
                         const mSchedules = memberSchedules[String(member.id)] || memberSchedules[`name_${member.member_name?.trim().toLowerCase()}`] || [];
-                        // Show only members who have TODAY's bill still pending
-                        return mSchedules.some(s => s.scheduled_date?.split('T')[0].split(' ')[0] === today && s.status !== 'Paid' && s.status !== 'Received' && s.status !== 'Verified');
-                      }).map(member => (
-                        <button 
-                          key={member.id}
-                          onClick={() => setSelectedMember(member)}
-                          className="group bg-slate-800/40 border border-white/5 p-6 rounded-3xl text-left transition-all hover:border-indigo-500/50 hover:bg-indigo-600/5"
-                        >
-                          <div className="flex justify-between items-center mb-4">
-                            <div className="w-14 h-14 bg-slate-800 rounded-2xl flex items-center justify-center overflow-hidden border-2 border-white/10 shadow-xl group-hover:border-indigo-500/50 transition-all">
-                              {member.member_photo_url ? (
-                                <img src={member.member_photo_url} alt="Profile" className="w-full h-full object-cover" />
+                        // ✅ CLOSED = only when DB loan status is 'CLOSED' (all EMIs paid & verified by backend)
+                        const isClosed = member.status === 'CLOSED' || closedLoanIds.has(member.id);
+
+                        return (
+                          <button 
+                            key={member.id}
+                            onClick={() => !isClosed && setSelectedMember(member)}
+                            className={`group border p-6 rounded-3xl text-left transition-all ${
+                              isClosed
+                                ? 'bg-yellow-500/5 border-yellow-500/20 cursor-default opacity-80'
+                                : 'bg-slate-800/40 border-white/5 hover:border-indigo-500/50 hover:bg-indigo-600/5'
+                            }`}
+                          >
+                            <div className="flex justify-between items-center mb-4">
+                              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center overflow-hidden border-2 shadow-xl transition-all ${
+                                isClosed ? 'bg-yellow-900/30 border-yellow-500/30' : 'bg-slate-800 border-white/10 group-hover:border-indigo-500/50'
+                              }`}>
+                                {member.member_photo_url ? (
+                                  <img src={member.member_photo_url} alt="Profile" className="w-full h-full object-cover" />
+                                ) : (
+                                  <FaUserCircle className={`text-3xl ${isClosed ? 'text-yellow-600' : 'text-slate-600'}`} />
+                                )}
+                              </div>
+                              {/* Status Badge */}
+                              {isClosed ? (
+                                <div className="flex items-center gap-1.5 text-[10px] font-black text-yellow-400 uppercase bg-yellow-500/10 border border-yellow-500/20 px-3 py-1 rounded-lg">
+                                  <FaTrophy size={10} /> CLOSED
+                                </div>
                               ) : (
-                                <FaUserCircle className="text-slate-600 text-3xl" />
+                                <div className="text-[10px] font-black text-emerald-400 uppercase bg-emerald-500/10 px-2 py-1 rounded-lg">Active</div>
                               )}
                             </div>
-                            <div className="text-[10px] font-black text-emerald-400 uppercase bg-emerald-500/10 px-2 py-1 rounded-lg">Active</div>
-                          </div>
-                          <h4 className="text-xl font-black text-white group-hover:text-indigo-400 transition-colors uppercase tracking-tight">{member.member_name}</h4>
-                          <p className="text-[11px] text-slate-400 font-bold mt-1">Loan: ₹{Number(member.amount_sanctioned || 0).toLocaleString()}</p>
-                          <div className="mt-4 flex justify-between items-center text-xs">
-                            <span className="text-slate-500">Fixed Week:</span>
-                            <span className="font-black text-white">₹{((memberSchedules[String(member.id)] || memberSchedules[`name_${member.member_name?.trim().toLowerCase()}`])?.[0]?.amount || 0).toFixed(0)}</span>
-                          </div>
-                        </button>
-                      ))}
+                            <h4 className={`text-xl font-black tracking-tight uppercase transition-colors ${
+                              isClosed ? 'text-yellow-200/80' : 'text-white group-hover:text-indigo-400'
+                            }`}>{member.member_name}</h4>
+                            <p className="text-[11px] text-slate-400 font-bold mt-1">Loan: ₹{Number(member.amount_sanctioned || 0).toLocaleString()}</p>
+                            <div className="mt-4 flex justify-between items-center text-xs">
+                              <span className="text-slate-500">Fixed Week:</span>
+                              <span className="font-black text-white">₹{(mSchedules[0]?.amount || 0)}</span>
+                            </div>
+                            {isClosed && (
+                              <div className="mt-3 flex items-center gap-2 text-[10px] font-black text-yellow-500/70 uppercase tracking-widest">
+                                <FaTrophy size={10} /> Loan Fully Repaid
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 ) : (

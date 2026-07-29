@@ -302,12 +302,12 @@ app.get('/api/bills/:centerId', async (req, res) => {
       penalty: getPenalty(s.scheduled_date, s.status)
     }));
 
-    // 2. Get members of this center
+    // 2. Get members of this center — include CLOSED loans so frontend can show status
     const { data: members, error: memError } = await supabase
       .from('loans')
-      .select('member_name, id, amount_sanctioned, member_photo_url, members(member_no)')
+      .select('member_name, id, amount_sanctioned, member_photo_url, status, members(member_no)')
       .eq('center_id', centerId)
-      .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED']);
+      .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED', 'CLOSED']);
 
     if (memError) throw memError;
 
@@ -331,10 +331,10 @@ app.post('/api/collections/:id/pay', async (req, res) => {
     const { id } = req.params;
     const { collectedAmount } = req.body;
 
-    // First find the original schedule amount
+    // First find the original schedule amount + loan_id
     const { data: schedule, error: schError } = await supabase
       .from('collection_schedules')
-      .select('amount, scheduled_date, status')
+      .select('amount, scheduled_date, status, loan_id')
       .eq('id', id)
       .single();
 
@@ -366,7 +366,30 @@ app.post('/api/collections/:id/pay', async (req, res) => {
       .select();
 
     if (error) throw error;
-    res.json(data[0]);
+
+    // --- CHECK FOR LOAN CLOSURE ---
+    let closedLoan = null;
+    if (newStatus === 'Paid' && schedule.loan_id) {
+      const { data: allLoanSchedules } = await supabase
+        .from('collection_schedules')
+        .select('status')
+        .eq('loan_id', schedule.loan_id);
+
+      const isFullyPaid = allLoanSchedules && allLoanSchedules.length > 0 &&
+        allLoanSchedules.every(s => s.status === 'Paid');
+
+      if (isFullyPaid) {
+        const { data: closed } = await supabase
+          .from('loans')
+          .update({ status: 'CLOSED' })
+          .eq('id', schedule.loan_id)
+          .select('id, member_name, member_id, center_id')
+          .maybeSingle();
+        closedLoan = closed || null;
+      }
+    }
+
+    res.json({ ...data[0], closedLoan });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -462,6 +485,77 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// DELETE Center (cascade: storage images → schedules → loans → center)
+app.delete('/api/centers/:id', async (req, res) => {
+  const centerId = parseInt(req.params.id);
+  if (!centerId) return res.status(400).json({ error: 'Invalid center ID' });
+
+  try {
+    // Step 1: Verify center exists
+    const { data: center, error: ce } = await supabase
+      .from('centers')
+      .select('id, name')
+      .eq('id', centerId)
+      .single();
+    if (ce || !center) return res.status(404).json({ error: 'Center not found' });
+
+    // Step 2: Fetch all loan photo URLs BEFORE deleting loans
+    const { data: loans, error: le } = await supabase
+      .from('loans')
+      .select('id, member_photo_url')
+      .eq('center_id', centerId);
+    if (le) throw le;
+
+    // Step 3: Delete storage images for this center's loans only
+    const photoUrls = (loans || []).map(l => l.member_photo_url).filter(Boolean);
+    const storageDeleted = [];
+    for (const url of photoUrls) {
+      try {
+        const filename = url.split('/').pop().split('?')[0];
+        const { error: se } = await supabase.storage.from('loan-documents').remove([filename]);
+        if (!se) storageDeleted.push(filename);
+      } catch (_) {}
+    }
+
+    // Step 4: Delete collection_schedules for this center only
+    const { error: e1, count: c1 } = await supabase
+      .from('collection_schedules')
+      .delete({ count: 'exact' })
+      .eq('center_id', centerId);
+    if (e1) throw e1;
+
+    // Step 5: Delete loans for this center only
+    const { error: e2, count: c2 } = await supabase
+      .from('loans')
+      .delete({ count: 'exact' })
+      .eq('center_id', centerId);
+    if (e2) throw e2;
+
+    // Step 6: Delete the center itself
+    const { error: e3 } = await supabase
+      .from('centers')
+      .delete()
+      .eq('id', centerId);
+    if (e3) throw e3;
+
+    // Invalidate cache
+    cache.flushAll();
+
+    res.json({
+      success: true,
+      message: `Center "${center.name}" deleted successfully`,
+      deleted: {
+        center: center.name,
+        schedules: c1 || 0,
+        loans: c2 || 0,
+        images: storageDeleted.length
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/login', async (req, res) => {
   const { staffId, password, role } = req.body;
   
