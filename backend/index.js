@@ -96,6 +96,81 @@ const getPenalty = (scheduledDate, scheduleStatus) => {
   return diffDays > 0 ? diffDays * 20 : 0;
 };
 
+// ============================================================
+// CENTRAL EMI STRUCTURE — Single source of truth for all loan amounts
+// Any change to EMI structure must be made HERE only.
+// ============================================================
+const EMI_STRUCTURES = {
+  10000: { 1:1100, 2:1100, 3:1100, 4:1100, 5:1080, 6:1080, 7:1080, 8:1080, 9:1070, 10:1070, 11:1070, 12:1070 },
+  11000: { 1:1050, 2:1050, 3:1050, 4:1050, 5:1020, 6:1020, 7:1020, 8:1020, 9:980, 10:980, 11:980, 12:980, 13:950, 14:950, 15:950, 16:950 },
+  12000: { 1:1050, 2:1050, 3:1050, 4:1050, 5:1020, 6:1020, 7:1020, 8:1020, 9:990, 10:990, 11:990, 12:990, 13:970, 14:970, 15:970, 16:970, 17:940, 18:940 },
+  13000: { 1:990, 2:990, 3:990, 4:990, 5:970, 6:970, 7:970, 8:970, 9:940, 10:940, 11:940, 12:940, 13:910, 14:910, 15:910, 16:910, 17:890, 18:890 },
+  15000: { 1:1000, 2:1000, 3:1000, 4:1000, 5:980, 6:980, 7:980, 8:980, 9:960, 10:960, 11:960, 12:960, 13:940, 14:940, 15:940, 16:940, 17:920, 18:920, 19:920, 20:920, 21:900, 22:900 }
+};
+
+const getEMIAmount = (amountSanctioned, weekNumber) => {
+  const structure = EMI_STRUCTURES[amountSanctioned];
+  if (!structure) return null;
+  return structure[weekNumber] || null;
+};
+
+// ============================================================
+// AUTO-HEAL: Silently fix null loan_ids + wrong amounts for a center
+// Called in background whenever bills are fetched — zero UI impact
+// ============================================================
+async function autoHealCenter(centerId) {
+  try {
+    // 1. Fetch loans for this center
+    const { data: loans } = await supabase.from('loans').select('id, member_name, amount_sanctioned, member_id').eq('center_id', centerId);
+    if (!loans || loans.length === 0) return;
+
+    const loanByName = {};
+    const loanById = {};
+    loans.forEach(l => {
+      loanByName[l.member_name?.trim()?.toLowerCase()] = l;
+      loanById[l.id] = l;
+    });
+
+    // 2. Fetch all schedules for this center
+    const { data: schedules } = await supabase.from('collection_schedules').select('*').eq('center_id', centerId);
+    if (!schedules || schedules.length === 0) return;
+
+    for (const s of schedules) {
+      const updates = {};
+      let loan = s.loan_id ? loanById[s.loan_id] : null;
+
+      // Fix null loan_id by matching member_name
+      if (!s.loan_id) {
+        const matched = loanByName[s.member_name?.trim()?.toLowerCase()];
+        if (matched) {
+          updates.loan_id = matched.id;
+          updates.member_id = matched.member_id;
+          loan = matched;
+        }
+      }
+
+      // Fix wrong EMI amount
+      if (loan) {
+        const correctAmount = getEMIAmount(loan.amount_sanctioned, s.week_number);
+        if (correctAmount !== null && s.amount !== correctAmount) {
+          updates.amount = correctAmount;
+          // Also fix collected_amount for paid weeks if it was matching old wrong amount
+          if (['Paid', 'Received', 'Verified'].includes(s.status) && s.collected_amount === s.amount) {
+            updates.collected_amount = correctAmount;
+          }
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await supabase.from('collection_schedules').update(updates).eq('id', s.id);
+      }
+    }
+  } catch (err) {
+    // Silent — auto-heal must never crash the main request
+    console.error('[AutoHeal] Error:', err.message);
+  }
+}
+
 // Stats for RO Dashboard
 app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
   try {
@@ -286,6 +361,9 @@ app.get('/api/centers', cacheMiddleware(15), async (req, res) => {
 app.get('/api/bills/:centerId', async (req, res) => {
   try {
     const { centerId } = req.params;
+
+    // AUTO-HEAL: Run silently in background — fix null loan_ids & wrong amounts
+    autoHealCenter(parseInt(centerId)).catch(() => {});
     
     // 1. Get all schedules for this center
     const { data: rawSchedules, error: schError } = await supabase
@@ -320,6 +398,71 @@ app.get('/api/bills/:centerId', async (req, res) => {
       schedules: schedules || [],
       members: formattedMembers
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST: Full system audit — fix all null loan_ids & wrong amounts across all centers
+app.post('/api/admin/heal-all', async (req, res) => {
+  try {
+    const { data: centers } = await supabase.from('centers').select('id, name');
+    if (!centers) return res.json({ message: 'No centers found' });
+
+    let totalFixed = 0;
+    const report = [];
+
+    for (const center of centers) {
+      const { data: loans } = await supabase.from('loans').select('id, member_name, amount_sanctioned, member_id').eq('center_id', center.id);
+      if (!loans || loans.length === 0) continue;
+
+      const loanByName = {};
+      const loanById = {};
+      loans.forEach(l => {
+        loanByName[l.member_name?.trim()?.toLowerCase()] = l;
+        loanById[l.id] = l;
+      });
+
+      const { data: schedules } = await supabase.from('collection_schedules').select('*').eq('center_id', center.id);
+      if (!schedules || schedules.length === 0) continue;
+
+      let centerFixed = 0;
+      for (const s of schedules) {
+        const updates = {};
+        let loan = s.loan_id ? loanById[s.loan_id] : null;
+
+        if (!s.loan_id) {
+          const matched = loanByName[s.member_name?.trim()?.toLowerCase()];
+          if (matched) {
+            updates.loan_id = matched.id;
+            updates.member_id = matched.member_id;
+            loan = matched;
+          }
+        }
+
+        if (loan) {
+          const correctAmount = getEMIAmount(loan.amount_sanctioned, s.week_number);
+          if (correctAmount !== null && s.amount !== correctAmount) {
+            updates.amount = correctAmount;
+            if (['Paid', 'Received', 'Verified'].includes(s.status) && s.collected_amount === s.amount) {
+              updates.collected_amount = correctAmount;
+            }
+          }
+        }
+
+        if (Object.keys(updates).length > 0) {
+          const { error } = await supabase.from('collection_schedules').update(updates).eq('id', s.id);
+          if (!error) centerFixed++;
+        }
+      }
+
+      if (centerFixed > 0) {
+        totalFixed += centerFixed;
+        report.push({ center: center.name, fixed: centerFixed });
+      }
+    }
+
+    res.json({ message: 'Heal complete', totalFixed, report });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -603,6 +746,103 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
 
+// ============================================================
+// AUTO-HEAL ALL CENTERS — Runs on startup and daily at midnight
+// Fixes: null loan_ids + wrong EMI amounts across ALL centers
+// ============================================================
+async function autoHealAll(trigger = 'manual') {
+  try {
+    console.log(`[AutoHeal] Starting full system heal (trigger: ${trigger})...`);
+    const { data: centers } = await supabase.from('centers').select('id, name');
+    if (!centers || centers.length === 0) return;
+
+    let totalFixed = 0;
+
+    for (const center of centers) {
+      const { data: loans } = await supabase
+        .from('loans')
+        .select('id, member_name, amount_sanctioned, member_id')
+        .eq('center_id', center.id);
+      if (!loans || loans.length === 0) continue;
+
+      const loanByName = {};
+      const loanById = {};
+      loans.forEach(l => {
+        loanByName[l.member_name?.trim()?.toLowerCase()] = l;
+        loanById[l.id] = l;
+      });
+
+      const { data: schedules } = await supabase
+        .from('collection_schedules')
+        .select('id, loan_id, member_id, member_name, week_number, amount, collected_amount, status')
+        .eq('center_id', center.id);
+      if (!schedules || schedules.length === 0) continue;
+
+      let centerFixed = 0;
+      for (const s of schedules) {
+        const updates = {};
+        let loan = s.loan_id ? loanById[s.loan_id] : null;
+
+        // Fix 1: Null loan_id — match by member name
+        if (!s.loan_id) {
+          const matched = loanByName[s.member_name?.trim()?.toLowerCase()];
+          if (matched) {
+            updates.loan_id = matched.id;
+            updates.member_id = matched.member_id;
+            loan = matched;
+          }
+        }
+
+        // Fix 2: Wrong EMI amount
+        if (loan) {
+          const correctAmount = getEMIAmount(loan.amount_sanctioned, s.week_number);
+          if (correctAmount !== null && s.amount !== correctAmount) {
+            updates.amount = correctAmount;
+            // Fix collected_amount for paid weeks only if it exactly matched the old wrong amount
+            if (['Paid', 'Received', 'Verified'].includes(s.status) && s.collected_amount === s.amount) {
+              updates.collected_amount = correctAmount;
+            }
+          }
+        }
+
+        if (Object.keys(updates).length > 0) {
+          const { error } = await supabase.from('collection_schedules').update(updates).eq('id', s.id);
+          if (!error) centerFixed++;
+        }
+      }
+
+      if (centerFixed > 0) {
+        totalFixed += centerFixed;
+        console.log(`[AutoHeal] ${center.name}: fixed ${centerFixed} record(s)`);
+      }
+    }
+
+    console.log(`[AutoHeal] Done. Total fixed: ${totalFixed} record(s).`);
+    cache.flushAll(); // Clear cache so fresh data is served after heal
+  } catch (err) {
+    console.error('[AutoHeal] Error during full heal:', err.message);
+  }
+}
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Collection Control Backend running on port ${PORT}`);
+
+  // LAYER 1: Heal everything on server startup
+  autoHealAll('startup');
+
+  // LAYER 2: Daily automatic heal — runs every 24 hours at midnight
+  const msUntilMidnight = () => {
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    return midnight - now;
+  };
+
+  // First fire at next midnight, then every 24h
+  setTimeout(() => {
+    autoHealAll('daily-midnight');
+    setInterval(() => autoHealAll('daily-midnight'), 24 * 60 * 60 * 1000);
+  }, msUntilMidnight());
+
+  console.log(`[AutoHeal] Startup heal running. Next daily heal at midnight.`);
 });
