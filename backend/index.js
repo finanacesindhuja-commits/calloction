@@ -5,6 +5,8 @@ const path = require('path');
 const compression = require('compression');
 const morgan = require('morgan');
 const NodeCache = require('node-cache');
+const cron = require('node-cron');
+const axios = require('axios');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const cache = new NodeCache({ stdTTL: 15 });
@@ -76,6 +78,18 @@ app.use(express.json({ limit: '50mb' }));
 const supabaseUrl = process.env.SUPABASE_URL?.trim();
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Google Sheets Sync Helper
+async function syncToGoogleSheets(action, payload) {
+  const url = process.env.GOOGLE_SHEET_WEBAPP_URL;
+  if (!url) return;
+  try {
+    const data = { action, ...payload };
+    await axios.post(url, data, { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    console.error(`[Google Sheets Sync] Error: ${error.message}`);
+  }
+}
 
 // Health Check
 app.get('/api/health', (req, res) => {
@@ -474,10 +488,10 @@ app.post('/api/collections/:id/pay', async (req, res) => {
     const { id } = req.params;
     const { collectedAmount } = req.body;
 
-    // First find the original schedule amount + loan_id
+    // First find the original schedule amount + loan_id + member info
     const { data: schedule, error: schError } = await supabase
       .from('collection_schedules')
-      .select('amount, scheduled_date, status, loan_id')
+      .select('amount, scheduled_date, status, loan_id, member_id')
       .eq('id', id)
       .single();
 
@@ -511,15 +525,25 @@ app.post('/api/collections/:id/pay', async (req, res) => {
     if (error) throw error;
 
     // --- CHECK FOR LOAN CLOSURE ---
+    // Trigger for every payment — handles ARCHIVED + DISBURSED loans equally
     let closedLoan = null;
-    if (newStatus === 'Paid' && schedule.loan_id) {
+    if (schedule.loan_id) {
       const { data: allLoanSchedules } = await supabase
         .from('collection_schedules')
-        .select('status')
-        .eq('loan_id', schedule.loan_id);
+        .select('status, scheduled_date')
+        .eq('loan_id', schedule.loan_id)
+        .order('scheduled_date', { ascending: true });
 
-      const isFullyPaid = allLoanSchedules && allLoanSchedules.length > 0 &&
-        allLoanSchedules.every(s => s.status === 'Paid');
+      let isFullyPaid = false;
+      if (allLoanSchedules && allLoanSchedules.length > 0) {
+        const lastSchedule = allLoanSchedules[allLoanSchedules.length - 1];
+        const previousSchedules = allLoanSchedules.slice(0, -1);
+        
+        const lastOk = (lastSchedule.status === 'Paid' || lastSchedule.status === 'Received');
+        const prevOk = previousSchedules.every(s => s.status === 'Received');
+        
+        isFullyPaid = lastOk && prevOk;
+      }
 
       if (isFullyPaid) {
         const { data: closed } = await supabase
@@ -530,6 +554,11 @@ app.post('/api/collections/:id/pay', async (req, res) => {
           .maybeSingle();
         closedLoan = closed || null;
       }
+    }
+
+    // Google Sheets Sync: Remove specific schedule row when paid
+    if (newStatus === 'Paid') {
+      syncToGoogleSheets('REMOVE_PAID', { scheduleIds: [String(id)] });
     }
 
     res.json({ ...data[0], closedLoan });
@@ -593,14 +622,21 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     const closedLoans = [];
 
     for (const loanId of affectedLoanIds) {
-      // 2. Check if all schedules for this specific loan are now 'Paid'
+      // 2. Check if all schedules for this specific loan meet the closure criteria
       const { data: allLoanSchedules, error: checkError } = await supabase
         .from('collection_schedules')
-        .select('status')
-        .eq('loan_id', loanId);
+        .select('status, scheduled_date')
+        .eq('loan_id', loanId)
+        .order('scheduled_date', { ascending: true });
 
       if (!checkError && allLoanSchedules && allLoanSchedules.length > 0) {
-        const isFullyPaid = allLoanSchedules.every(s => s.status === 'Paid');
+        const lastSchedule = allLoanSchedules[allLoanSchedules.length - 1];
+        const previousSchedules = allLoanSchedules.slice(0, -1);
+        
+        const lastOk = (lastSchedule.status === 'Paid' || lastSchedule.status === 'Received');
+        const prevOk = previousSchedules.every(s => s.status === 'Received');
+        
+        const isFullyPaid = lastOk && prevOk;
         
         if (isFullyPaid) {
           // 3. Update loan status to 'CLOSED'
@@ -616,6 +652,12 @@ app.post('/api/collections/batch-pay', async (req, res) => {
           }
         }
       }
+    }
+
+    // Google Sheets Sync: Remove specific schedule rows when paid
+    const paidScheduleIds = updates.filter(u => u.status === 'Paid').map(u => String(u.id));
+    if (paidScheduleIds.length > 0) {
+      syncToGoogleSheets('REMOVE_PAID', { scheduleIds: paidScheduleIds });
     }
 
     res.json({ 
@@ -823,6 +865,79 @@ async function autoHealAll(trigger = 'manual') {
     console.error('[AutoHeal] Error during full heal:', err.message);
   }
 }
+
+// ============================================================
+// CRON JOB: Sync pending collections to Google Sheets at 6 PM daily
+// ============================================================
+cron.schedule('0 18 * * *', async () => {
+  console.log('[Cron] Starting Google Sheets sync for pending collections...');
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // 1. Fetch pending schedules (<= today)
+    const { data: schedules, error: schError } = await supabase
+      .from('collection_schedules')
+      .select('id, amount, status, collected_amount, scheduled_date, member_id, loan_id, center_id, center_name, member_name')
+      .lte('scheduled_date', today)
+      .not('status', 'in', '("Paid","Received","Verified")');
+      
+    if (schError) throw schError;
+    if (!schedules || schedules.length === 0) {
+      console.log('[Cron] No pending schedules found for today.');
+      return;
+    }
+    
+    // 2. Fetch associated loans for member_no and mobile numbers
+    const loanIds = [...new Set(schedules.map(s => s.loan_id).filter(Boolean))];
+    
+    const { data: loans, error: loanError } = await supabase
+      .from('loans')
+      .select('id, mobile_no, nominee_mobile, members(member_no)')
+      .in('id', loanIds);
+      
+    if (loanError) throw loanError;
+    
+    const loanMap = {};
+    if (loans) {
+      loans.forEach(l => {
+        loanMap[l.id] = {
+          mobile1: l.mobile_no || '',
+          mobile2: l.nominee_mobile || '',
+          memberNo: l.members?.member_no || ''
+        };
+      });
+    }
+
+    // 3. Format records
+    const records = schedules.map(s => {
+      const penalty = getPenalty(s.scheduled_date, s.status);
+      const targetAmount = Number(s.amount) + penalty;
+      const amountDue = targetAmount - (Number(s.collected_amount) || 0);
+      
+      const loanInfo = loanMap[s.loan_id] || { mobile1: '', mobile2: '', memberNo: '' };
+      
+      return {
+        memberId: loanInfo.memberNo || s.member_name, // fallback to name if ID missing
+        centerName: s.center_name || '',
+        memberName: s.member_name || '',
+        mobile1: loanInfo.mobile1,
+        mobile2: loanInfo.mobile2,
+        pendingDate: s.scheduled_date,
+        pendingDue: amountDue,
+        collectedAmount: Number(s.collected_amount) || 0,
+        status: s.status,
+        scheduleId: s.id
+      };
+    });
+    
+    // 4. Send to Google Sheets
+    await syncToGoogleSheets('ADD_PENDING', { records });
+    console.log(`[Cron] Synced ${records.length} pending records to Google Sheets.`);
+    
+  } catch (err) {
+    console.error('[Cron] Error syncing to Google Sheets:', err.message);
+  }
+});
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Collection Control Backend running on port ${PORT}`);
