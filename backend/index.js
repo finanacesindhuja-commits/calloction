@@ -81,7 +81,8 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Google Sheets Sync Helper
 async function syncToGoogleSheets(action, payload) {
-  const url = process.env.GOOGLE_SHEET_WEBAPP_URL;
+  // Hardcoded to avoid missing .env issues on cloud server
+  const url = 'https://script.google.com/macros/s/AKfycbwSah3tejW0xTkCIdKoPBllvan3dvzkxmA9Q3XdlcBWnd5TQa15AmU6_rPf7dW9qy0R/exec';
   if (!url) return;
   try {
     const data = { action, ...payload };
