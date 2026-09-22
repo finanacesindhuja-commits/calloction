@@ -1303,4 +1303,17 @@ app.listen(PORT, '0.0.0.0', () => {
   whatsappService.init().catch(err => {
     console.error('[WhatsApp] Failed to start WhatsApp engine:', err.message);
   });
+
+  // WhatsApp Watchdog: Check every 10 minutes — auto-reinitialize if disconnected
+  setInterval(() => {
+    const status = whatsappService.getStatus();
+    if (status.status === 'DISCONNECTED') {
+      console.log('[WhatsApp Watchdog] Disconnected detected — attempting auto-reconnect...');
+      whatsappService.init().catch(err => {
+        console.error('[WhatsApp Watchdog] Reconnect failed:', err.message);
+      });
+    } else {
+      console.log(`[WhatsApp Watchdog] Status OK: ${status.status}`);
+    }
+  }, 10 * 60 * 1000); // Every 10 minutes
 });
