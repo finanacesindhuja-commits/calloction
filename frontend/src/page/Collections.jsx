@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FaUsers, FaSearch, FaCheckCircle, FaExclamationCircle, FaLock, FaCheck, FaTrophy } from 'react-icons/fa';
+import { FaUsers, FaSearch, FaCheckCircle, FaExclamationCircle, FaLock, FaCheck, FaTrophy, FaWhatsapp } from 'react-icons/fa';
 import API_URL, { LOAN_APP_URL } from '../apiConfig';
 
 export default function Collections() {
@@ -11,6 +11,9 @@ export default function Collections() {
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   
+  // WhatsApp connection status state
+  const [waStatus, setWaStatus] = useState({ isConnected: false, status: 'DISCONNECTED' });
+
   // collectionAmounts keyed by member.id to allow inline typing per member
   const [collectionAmounts, setCollectionAmounts] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -26,7 +29,20 @@ export default function Collections() {
 
   useEffect(() => {
     fetchCenters();
+    checkWhatsAppStatus();
+    const interval = setInterval(checkWhatsAppStatus, 15000);
+    return () => clearInterval(interval);
   }, []);
+
+  const checkWhatsAppStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/whatsapp/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setWaStatus(data);
+      }
+    } catch (_) {}
+  };
 
   const fetchCenters = async (date) => {
     try {
@@ -260,7 +276,7 @@ export default function Collections() {
 
         setNotification({
           type: 'success',
-          message: 'Collections tallied and submitted perfectly!',
+          message: 'Collections tallied and submitted! WhatsApp bills are being sent automatically to all paid members.',
           action: () => {
             window.dispatchEvent(new Event('collectionSubmitted'));
             setStep(1);
@@ -288,6 +304,27 @@ export default function Collections() {
         <div>
           <h1 className="text-4xl font-black text-white mb-2 tracking-tight">Field Collections</h1>
           <p className="text-blue-400/60 font-medium uppercase tracking-widest text-xs">Tally & Batch Processing</p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <a
+            href={`${API_URL}/whatsapp`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`flex items-center gap-2.5 px-4 py-2.5 rounded-2xl border text-xs font-bold transition-all shadow-md active:scale-95 ${
+              waStatus.isConnected 
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20' 
+                : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/20'
+            }`}
+            title={waStatus.isConnected ? 'WhatsApp Auto-Bill is active' : 'Click to scan WhatsApp QR code'}
+          >
+            <FaWhatsapp size={16} />
+            <span>
+              {waStatus.isConnected 
+                ? `WhatsApp Active ${waStatus.user?.phone ? `(+${waStatus.user.phone})` : ''}` 
+                : 'Link WhatsApp for Auto-Bill'}
+            </span>
+          </a>
         </div>
       </div>
 

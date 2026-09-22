@@ -77,5 +77,8 @@ dist-ssr
 *.suo
 *.ntvs*
 *.njsproj
-*.sln
 *.sw?
+
+# WhatsApp Baileys Auth Session
+auth_info_baileys/
+backend/auth_info_baileys/
