@@ -179,6 +179,7 @@ class WhatsAppService {
   }
 
   // Send bills to multiple members with rate-limiting safety delay
+  // If member's number fails, automatically fallback to nominee number
   async sendBatchBills(bills) {
     if (!bills || !bills.length) return [];
     const results = [];
@@ -186,13 +187,31 @@ class WhatsAppService {
     for (let i = 0; i < bills.length; i++) {
       const bill = bills[i];
       const messageText = this.generateBillReceiptText(bill);
-      const res = await this.sendMessage(bill.phone, messageText);
-      results.push({
-        memberName: bill.memberName,
-        phone: bill.phone,
-        amount: bill.amountPaid,
-        ...res
-      });
+
+      // Try member phone first
+      let res = await this.sendMessage(bill.phone, messageText);
+
+      // If member phone failed and nominee phone exists, try nominee
+      if (!res.success && bill.phone2) {
+        console.log(`[WhatsApp] Member ${bill.memberName}: primary phone failed, trying nominee (${bill.phone2})...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const nomineeRes = await this.sendMessage(bill.phone2, messageText);
+        results.push({
+          memberName: bill.memberName,
+          phone: bill.phone2,
+          sentToNominee: true,
+          amount: bill.amountPaid,
+          ...nomineeRes
+        });
+      } else {
+        results.push({
+          memberName: bill.memberName,
+          phone: bill.phone,
+          sentToNominee: false,
+          amount: bill.amountPaid,
+          ...res
+        });
+      }
 
       // 1.5s delay between messages to prevent spam detection
       if (i < bills.length - 1) {

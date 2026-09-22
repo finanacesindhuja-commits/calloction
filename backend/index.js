@@ -754,7 +754,9 @@ app.post('/api/collections/:id/pay', async (req, res) => {
         .single()
         .then(async ({ data: loan }) => {
           if (loan) {
-            const phone = loan.mobile_no || loan.nominee_mobile;
+            const primaryPhone = loan.mobile_no;
+            const nomineePhone = loan.nominee_mobile;
+            const phone = primaryPhone || nomineePhone;
             if (phone) {
               const { data: loanSchedules } = await supabase
                 .from('collection_schedules')
@@ -781,9 +783,12 @@ app.post('/api/collections/:id/pay', async (req, res) => {
                 remainingBalance: remainingBal
               });
 
-              whatsappService.sendMessage(phone, receiptText).catch(err => {
-                console.error('[WhatsApp] Single payment send error:', err.message);
-              });
+              // Try primary phone; if fails and nominee exists, try nominee
+              const res1 = await whatsappService.sendMessage(phone, receiptText);
+              if (!res1.success && primaryPhone && nomineePhone) {
+                console.log(`[WhatsApp] Single pay: primary failed, trying nominee for ${loan.member_name}`);
+                await whatsappService.sendMessage(nomineePhone, receiptText);
+              }
             }
           }
         }).catch(err => console.error('[WhatsApp] Error preparing single receipt:', err.message));
@@ -938,11 +943,13 @@ app.post('/api/collections/batch-pay', async (req, res) => {
         (loansData || []).forEach(loan => {
           const info = loanPaymentMap[loan.id];
           if (!info || info.totalPaid <= 0) return;
-          const phone = loan.mobile_no || loan.nominee_mobile;
-          if (!phone) return;
+          const phone = loan.mobile_no;
+          const phone2 = loan.nominee_mobile || null;
+          if (!phone && !phone2) return;
 
           billsToSend.push({
-            phone,
+            phone: phone || phone2,
+            phone2: phone ? phone2 : null, // nominee fallback only if primary exists
             memberName: loan.member_name,
             memberNo: loan.members?.member_no || '',
             centerName: loan.centers?.name || '',
