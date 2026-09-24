@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: sindhuja-fin-backend
+    env: node
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && node index.js
+    envVars:
+      - key: SUPABASE_URL
+        value: https://ojhxryeefkzhgwxwgsxj.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9qaHhyeWVlZmt6aGd3eHdnc3hqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mzg1NTEzNCwiZXhwIjoyMDg5NDMxMTM0fQ.ebd11rAKtb1n67IduQO8m5dWGzvf9S1ib1Fr_KQx5kY
+      - key: PORT
+        value: 5007
+      - key: GOOGLE_SHEET_WEBAPP_URL
+        value: https://script.google.com/macros/s/AKfycbwSah3tejW0xTkCIdKoPBllvan3dvzkxmA9Q3XdlcBWnd5TQa15AmU6_rPf7dW9qy0R/exec
