@@ -1,4 +1,4 @@
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const QRCode = require('qrcode');
 const pino = require('pino');
 const path = require('path');
@@ -13,6 +13,28 @@ class WhatsAppService {
     this.connectionStatus = 'DISCONNECTED'; // 'DISCONNECTED' | 'SCAN_QR' | 'CONNECTING' | 'CONNECTED'
     this.connectedUser = null;
     this.isInitializing = false;
+    this.keepAliveTimer = null;
+  }
+
+  startKeepAlive() {
+    this.stopKeepAlive();
+    // Send presence ping every 25 seconds to prevent NAT/router/idle disconnects
+    this.keepAliveTimer = setInterval(async () => {
+      if (this.connectionStatus === 'CONNECTED' && this.sock) {
+        try {
+          await this.sock.sendPresenceUpdate('available');
+        } catch (e) {
+          // Silent ignore ping errors
+        }
+      }
+    }, 25000);
+  }
+
+  stopKeepAlive() {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
   }
 
   async init() {
@@ -36,9 +58,11 @@ class WhatsAppService {
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        browser: ['Sindhuja Fin Collection', 'Chrome', '1.0.0'],
+        browser: Browsers.ubuntu('Chrome'),
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000,
+        retryRequestDelayMs: 2000,
       });
 
       this.sock.ev.on('creds.update', saveCreds);
@@ -66,9 +90,11 @@ class WhatsAppService {
             phone: phone
           };
           console.log(`[WhatsApp] Connected successfully as ${this.connectedUser.phone} (${this.connectedUser.name})!`);
+          this.startKeepAlive();
         }
 
         if (connection === 'close') {
+          this.stopKeepAlive();
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
           
