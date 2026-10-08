@@ -1218,23 +1218,35 @@ async function syncAllPendingToGoogleSheets() {
     return { syncedCount: 0 };
   }
   
-  const loanIds = [...new Set(schedules.map(s => s.loan_id).filter(Boolean))];
+  // 1. Fetch centers for name lookup fallback
+  const { data: centers } = await supabase.from('centers').select('id, name');
+  const centerMap = {};
+  if (centers) {
+    centers.forEach(c => centerMap[c.id] = c.name);
+  }
+
+  // 2. Fetch associated loans for member_no and mobile numbers (by ID + Name fallback)
   const { data: loans } = await supabase
     .from('loans')
-    .select('id, mobile_no, nominee_mobile, members(member_no)')
-    .in('id', loanIds);
+    .select('id, member_name, mobile_no, nominee_mobile, members(member_no)');
     
-  const loanMap = {};
+  const loanById = {};
+  const loanByName = {};
   if (loans) {
     loans.forEach(l => {
-      loanMap[l.id] = {
-        mobile1: l.mobile_no || '',
-        mobile2: l.nominee_mobile || '',
+      const info = {
+        mobile1: l.mobile_no ? String(l.mobile_no).trim() : '',
+        mobile2: l.nominee_mobile ? String(l.nominee_mobile).trim() : '',
         memberNo: l.members?.member_no || ''
       };
+      loanById[l.id] = info;
+      if (l.member_name) {
+        loanByName[l.member_name.trim().toLowerCase()] = info;
+      }
     });
   }
 
+  // 3. Format records with all possible mobile field key variations for Google Script compatibility
   const records = schedules.map(s => {
     let daysLate = 0;
     let penalty = 0;
@@ -1252,14 +1264,41 @@ async function syncAllPendingToGoogleSheets() {
 
     const targetAmount = Number(s.amount) + penalty;
     const amountDue = targetAmount - (Number(s.collected_amount) || 0);
-    const loanInfo = loanMap[s.loan_id] || { mobile1: '', mobile2: '', memberNo: '' };
+    
+    const loanInfo = (s.loan_id ? loanById[s.loan_id] : null) || 
+                     (s.member_name ? loanByName[s.member_name.trim().toLowerCase()] : null) || 
+                     { mobile1: '', mobile2: '', memberNo: '' };
+
+    const m1 = loanInfo.mobile1 || '';
+    const m2 = loanInfo.mobile2 || '';
     
     return {
       memberId: loanInfo.memberNo || s.member_name,
-      centerName: s.center_name || '',
+      centerName: s.center_name || centerMap[s.center_id] || '',
       memberName: s.member_name || '',
-      mobile1: loanInfo.mobile1,
-      mobile2: loanInfo.mobile2,
+      
+      // All mobile number key variations for 100% Google Apps Script compatibility
+      mobile1: m1,
+      mobile: m1,
+      mobile_no: m1,
+      mobileNo: m1,
+      mobile_number: m1,
+      mobileNumber: m1,
+      phone: m1,
+      phone1: m1,
+      phone_no: m1,
+      phoneNo: m1,
+      contact: m1,
+      contact_no: m1,
+      contactNo: m1,
+
+      mobile2: m2,
+      nomineeMobile: m2,
+      nominee_mobile: m2,
+      nominee_phone: m2,
+      phone2: m2,
+      contact2: m2,
+
       pendingDate: s.scheduled_date,
       pendingDue: amountDue,
       collectedAmount: Number(s.collected_amount) || 0,
@@ -1273,7 +1312,7 @@ async function syncAllPendingToGoogleSheets() {
   });
   
   await syncToGoogleSheets('ADD_PENDING', { records });
-  console.log(`[Google Sheets Sync] Synced ${records.length} pending records.`);
+  console.log(`[Google Sheets Sync] Synced ${records.length} pending records with mobile numbers.`);
   return { syncedCount: records.length };
 }
 
