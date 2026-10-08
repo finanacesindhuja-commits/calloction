@@ -82,3 +82,7 @@ dist-ssr
 # WhatsApp Baileys Auth Session
 auth_info_baileys/
 backend/auth_info_baileys/
+
+# Scratch & temporary files
+scratch/
+backend/scratch/

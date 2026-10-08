@@ -82,14 +82,19 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Google Sheets Sync Helper
 async function syncToGoogleSheets(action, payload) {
-  // Hardcoded to avoid missing .env issues on cloud server
-  const url = 'https://script.google.com/macros/s/AKfycbwSah3tejW0xTkCIdKoPBllvan3dvzkxmA9Q3XdlcBWnd5TQa15AmU6_rPf7dW9qy0R/exec';
-  if (!url) return;
+  const url = process.env.GOOGLE_SHEET_WEBAPP_URL || 'https://script.google.com/macros/s/AKfycbwSah3tejW0xTkCIdKoPBllvan3dvzkxmA9Q3XdlcBWnd5TQa15AmU6_rPf7dW9qy0R/exec';
+  if (!url) return null;
   try {
     const data = { action, ...payload };
-    await axios.post(url, data, { headers: { 'Content-Type': 'application/json' } });
+    const response = await axios.post(url, data, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 15000
+    });
+    console.log(`[Google Sheets Sync] ${action} Success:`, response.data);
+    return response.data;
   } catch (error) {
-    console.error(`[Google Sheets Sync] Error: ${error.message}`);
+    console.error(`[Google Sheets Sync] Error (${action}): ${error.message}`);
+    return null;
   }
 }
 
@@ -741,8 +746,12 @@ app.post('/api/collections/:id/pay', async (req, res) => {
     }
 
     // Google Sheets Sync: Remove specific schedule row when paid
-    if (newStatus === 'Paid') {
-      syncToGoogleSheets('REMOVE_PAID', { scheduleIds: [String(id)] });
+    if (['Paid', 'Received', 'Verified'].includes(newStatus)) {
+      await syncToGoogleSheets('REMOVE_PAID', { 
+        scheduleIds: [String(id), Number(id)],
+        scheduleId: String(id),
+        ids: [String(id), Number(id)]
+      });
     }
 
     // --- DISPATCH WHATSAPP RECEIPT FOR SINGLE PAYMENT ---
@@ -888,9 +897,18 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     }
 
     // Google Sheets Sync: Remove specific schedule rows when paid
-    const paidScheduleIds = updates.filter(u => u.status === 'Paid').map(u => String(u.id));
+    const paidScheduleIds = updates
+      .filter(u => ['Paid', 'Received', 'Verified'].includes(u.status))
+      .map(u => u.id);
+
     if (paidScheduleIds.length > 0) {
-      syncToGoogleSheets('REMOVE_PAID', { scheduleIds: paidScheduleIds });
+      const strIds = paidScheduleIds.map(id => String(id));
+      const numIds = paidScheduleIds.map(id => Number(id));
+      await syncToGoogleSheets('REMOVE_PAID', { 
+        scheduleIds: [...strIds, ...numIds],
+        scheduleId: strIds[0],
+        ids: [...strIds, ...numIds]
+      });
     }
 
     // --- AUTOMATIC WHATSAPP BILL DISPATCH TO ALL PAID MEMBERS ---
@@ -1181,94 +1199,101 @@ async function autoHealAll(trigger = 'manual') {
   }
 }
 
+// Helper function to sync current pending collections to Google Sheets
+async function syncAllPendingToGoogleSheets() {
+  console.log('[Google Sheets Sync] Starting full pending sync...');
+  const today = new Date().toISOString().split('T')[0];
+  
+  const { data: schedules, error: schError } = await supabase
+    .from('collection_schedules')
+    .select('id, amount, status, collected_amount, scheduled_date, member_id, loan_id, center_id, center_name, member_name')
+    .lte('scheduled_date', today)
+    .not('status', 'in', '("Paid","Received","Verified")')
+    .order('scheduled_date', { ascending: true });
+    
+  if (schError) throw schError;
+  if (!schedules || schedules.length === 0) {
+    console.log('[Google Sheets Sync] No pending schedules found.');
+    await syncToGoogleSheets('ADD_PENDING', { records: [] });
+    return { syncedCount: 0 };
+  }
+  
+  const loanIds = [...new Set(schedules.map(s => s.loan_id).filter(Boolean))];
+  const { data: loans } = await supabase
+    .from('loans')
+    .select('id, mobile_no, nominee_mobile, members(member_no)')
+    .in('id', loanIds);
+    
+  const loanMap = {};
+  if (loans) {
+    loans.forEach(l => {
+      loanMap[l.id] = {
+        mobile1: l.mobile_no || '',
+        mobile2: l.nominee_mobile || '',
+        memberNo: l.members?.member_no || ''
+      };
+    });
+  }
+
+  const records = schedules.map(s => {
+    let daysLate = 0;
+    let penalty = 0;
+    const cleanStatus = s.status ? String(s.status).trim() : '';
+    if (!['Paid', 'Verified', 'Received'].includes(cleanStatus)) {
+      const todayObj = new Date(today);
+      const schedObj = new Date(s.scheduled_date);
+      const diffTime = todayObj - schedObj;
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      if (diffDays > 0) {
+        daysLate = diffDays;
+        penalty = diffDays * 20;
+      }
+    }
+
+    const targetAmount = Number(s.amount) + penalty;
+    const amountDue = targetAmount - (Number(s.collected_amount) || 0);
+    const loanInfo = loanMap[s.loan_id] || { mobile1: '', mobile2: '', memberNo: '' };
+    
+    return {
+      memberId: loanInfo.memberNo || s.member_name,
+      centerName: s.center_name || '',
+      memberName: s.member_name || '',
+      mobile1: loanInfo.mobile1,
+      mobile2: loanInfo.mobile2,
+      pendingDate: s.scheduled_date,
+      pendingDue: amountDue,
+      collectedAmount: Number(s.collected_amount) || 0,
+      status: s.status,
+      scheduleId: s.id,
+      baseAmount: Number(s.amount),
+      daysLate: daysLate,
+      penaltyPerDay: 20,
+      totalPenalty: penalty
+    };
+  });
+  
+  await syncToGoogleSheets('ADD_PENDING', { records });
+  console.log(`[Google Sheets Sync] Synced ${records.length} pending records.`);
+  return { syncedCount: records.length };
+}
+
+// Admin manual Google Sheets Sync endpoint
+app.post('/api/admin/sync-sheets', async (req, res) => {
+  try {
+    const result = await syncAllPendingToGoogleSheets();
+    res.json({ message: 'Google Sheets sync completed successfully', ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================
 // CRON JOB: Sync pending collections to Google Sheets at 6 PM daily
 // ============================================================
 cron.schedule('0 18 * * *', async () => {
   console.log('[Cron] Starting Google Sheets sync for pending collections...');
   try {
-    const today = new Date().toISOString().split('T')[0];
-    
-    // 1. Fetch pending schedules (<= today)
-    const { data: schedules, error: schError } = await supabase
-      .from('collection_schedules')
-      .select('id, amount, status, collected_amount, scheduled_date, member_id, loan_id, center_id, center_name, member_name')
-      .lte('scheduled_date', today)
-      .not('status', 'in', '("Paid","Received","Verified")')
-      .order('scheduled_date', { ascending: true });
-      
-    if (schError) throw schError;
-    if (!schedules || schedules.length === 0) {
-      console.log('[Cron] No pending schedules found for today.');
-      return;
-    }
-    
-    // 2. Fetch associated loans for member_no and mobile numbers
-    const loanIds = [...new Set(schedules.map(s => s.loan_id).filter(Boolean))];
-    
-    const { data: loans, error: loanError } = await supabase
-      .from('loans')
-      .select('id, mobile_no, nominee_mobile, members(member_no)')
-      .in('id', loanIds);
-      
-    if (loanError) throw loanError;
-    
-    const loanMap = {};
-    if (loans) {
-      loans.forEach(l => {
-        loanMap[l.id] = {
-          mobile1: l.mobile_no || '',
-          mobile2: l.nominee_mobile || '',
-          memberNo: l.members?.member_no || ''
-        };
-      });
-    }
-
-    // 3. Format records
-    const records = schedules.map(s => {
-      // Calculate penalty breakdown
-      let daysLate = 0;
-      let penalty = 0;
-      const cleanStatus = s.status ? String(s.status).trim() : '';
-      if (!['Paid', 'Verified', 'Received'].includes(cleanStatus)) {
-        const todayObj = new Date(today);
-        const schedObj = new Date(s.scheduled_date);
-        const diffTime = todayObj - schedObj;
-        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-        if (diffDays > 0) {
-          daysLate = diffDays;
-          penalty = diffDays * 20;
-        }
-      }
-
-      const targetAmount = Number(s.amount) + penalty;
-      const amountDue = targetAmount - (Number(s.collected_amount) || 0);
-      
-      const loanInfo = loanMap[s.loan_id] || { mobile1: '', mobile2: '', memberNo: '' };
-      
-      return {
-        memberId: loanInfo.memberNo || s.member_name, // fallback to name if ID missing
-        centerName: s.center_name || '',
-        memberName: s.member_name || '',
-        mobile1: loanInfo.mobile1,
-        mobile2: loanInfo.mobile2,
-        pendingDate: s.scheduled_date,
-        pendingDue: amountDue,
-        collectedAmount: Number(s.collected_amount) || 0,
-        status: s.status,
-        scheduleId: s.id,
-        // Added breakdown fields
-        baseAmount: Number(s.amount),
-        daysLate: daysLate,
-        penaltyPerDay: 20,
-        totalPenalty: penalty
-      };
-    });
-    
-    // 4. Send to Google Sheets
-    await syncToGoogleSheets('ADD_PENDING', { records });
-    console.log(`[Cron] Synced ${records.length} pending records to Google Sheets.`);
-    
+    await syncAllPendingToGoogleSheets();
   } catch (err) {
     console.error('[Cron] Error syncing to Google Sheets:', err.message);
   }
