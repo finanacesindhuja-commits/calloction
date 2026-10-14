@@ -86,3 +86,5 @@ backend/auth_info_baileys/
 # Scratch & temporary files
 scratch/
 backend/scratch/
+last_sync_date.json
+backend/last_sync_date.json

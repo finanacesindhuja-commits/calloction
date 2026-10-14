@@ -2,6 +2,7 @@ const express = require('express'); // Last Deploy: 2026-04-14
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
+const fs = require('fs');
 const compression = require('compression');
 const morgan = require('morgan');
 const NodeCache = require('node-cache');
@@ -1200,9 +1201,30 @@ async function autoHealAll(trigger = 'manual') {
 }
 
 // Helper function to sync current pending collections to Google Sheets
+// Helper function to sync current pending collections to Google Sheets
+const SYNC_STATE_FILE = path.join(__dirname, 'last_sync_date.json');
+
+function getLastSyncDate() {
+  try {
+    if (fs.existsSync(SYNC_STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SYNC_STATE_FILE, 'utf8'));
+      return data.lastSyncDate || null;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function setLastSyncDate(dateStr) {
+  try {
+    fs.writeFileSync(SYNC_STATE_FILE, JSON.stringify({ lastSyncDate: dateStr, updatedAt: new Date().toISOString() }), 'utf8');
+  } catch (err) {
+    console.error('[Google Sheets Sync] Error writing sync state file:', err.message);
+  }
+}
+
 async function syncAllPendingToGoogleSheets() {
   console.log('[Google Sheets Sync] Starting full pending sync...');
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
   
   const { data: schedules, error: schError } = await supabase
     .from('collection_schedules')
@@ -1215,6 +1237,7 @@ async function syncAllPendingToGoogleSheets() {
   if (!schedules || schedules.length === 0) {
     console.log('[Google Sheets Sync] No pending schedules found.');
     await syncToGoogleSheets('ADD_PENDING', { records: [] });
+    setLastSyncDate(today);
     return { syncedCount: 0 };
   }
   
@@ -1312,8 +1335,32 @@ async function syncAllPendingToGoogleSheets() {
   });
   
   await syncToGoogleSheets('ADD_PENDING', { records });
+  setLastSyncDate(today);
   console.log(`[Google Sheets Sync] Synced ${records.length} pending records with mobile numbers.`);
   return { syncedCount: records.length };
+}
+
+// Catch-up & watchdog function to ensure daily 6 PM sync never gets missed
+async function checkAndRunDailySync(triggerSource = 'schedule') {
+  try {
+    const now = new Date();
+    const todayIST = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
+    const currentHourIST = parseInt(
+      new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }).format(now),
+      10
+    );
+
+    const lastSync = getLastSyncDate();
+
+    // If it's 6 PM (18:00) or later, and today's sync hasn't run yet
+    if (currentHourIST >= 18 && lastSync !== todayIST) {
+      console.log(`[Google Sheets Sync] Triggering daily 6 PM sync (source: ${triggerSource}, date: ${todayIST}, hour: ${currentHourIST})...`);
+      const res = await syncAllPendingToGoogleSheets();
+      console.log(`[Google Sheets Sync] Daily sync completed successfully for ${todayIST} (${res.syncedCount} records).`);
+    }
+  } catch (err) {
+    console.error(`[Google Sheets Sync] Daily check error (${triggerSource}):`, err.message);
+  }
 }
 
 // Admin manual Google Sheets Sync endpoint
@@ -1330,12 +1377,8 @@ app.post('/api/admin/sync-sheets', async (req, res) => {
 // CRON JOB: Sync pending collections to Google Sheets at 6 PM daily
 // ============================================================
 cron.schedule('0 18 * * *', async () => {
-  console.log('[Cron] Starting Google Sheets sync for pending collections...');
-  try {
-    await syncAllPendingToGoogleSheets();
-  } catch (err) {
-    console.error('[Cron] Error syncing to Google Sheets:', err.message);
-  }
+  console.log('[Cron] Triggering 6 PM Google Sheets sync for pending collections...');
+  await checkAndRunDailySync('cron-18:00');
 }, {
   scheduled: true,
   timezone: "Asia/Kolkata"
@@ -1362,6 +1405,15 @@ app.listen(PORT, '0.0.0.0', () => {
   }, msUntilMidnight());
 
   console.log(`[AutoHeal] Startup heal running. Next daily heal at midnight.`);
+
+  // LAYER 3: Catch-up Google Sheets 6 PM sync on server startup if missed
+  checkAndRunDailySync('startup');
+
+  // LAYER 4: Watchdog for Google Sheets 6 PM sync — checks every 5 minutes
+  // If laptop was asleep, suspended, or offline at 18:00, this will run as soon as it wakes up
+  setInterval(() => {
+    checkAndRunDailySync('watchdog-5min');
+  }, 5 * 60 * 1000);
 
   // Initialize WhatsApp Automation Engine
   whatsappService.init().catch(err => {
