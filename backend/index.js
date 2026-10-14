@@ -286,11 +286,14 @@ app.get('/whatsapp', (req, res) => {
 </html>`);
 });
 
+// Helper for Indian Standard Time (IST) Date YYYY-MM-DD
+const getTodayIST = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+
 // Utility to calculate dynamic 20 Rs daily late penalty
 const getPenalty = (scheduledDate, scheduleStatus) => {
   const cleanStatus = scheduleStatus ? String(scheduleStatus).trim() : '';
   if (cleanStatus === 'Paid' || cleanStatus === 'Verified' || cleanStatus === 'Received') return 0;
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getTodayIST();
   const todayObj = new Date(todayStr);
   const schedObj = new Date(scheduledDate);
   
@@ -382,7 +385,7 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
     const cacheKey = `/api/stats?staffId=${staffId || ''}`;
     
     const result = await coalesceRequest(cacheKey, async () => {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getTodayIST();
       
       // Step 0: Identify allowed centers if staffId is provided
       let allowedCenterIds = null;
@@ -504,7 +507,7 @@ app.get('/api/centers', cacheMiddleware(15), async (req, res) => {
     const cacheKey = `/api/centers?staffId=${staffId || ''}&date=${date || ''}`;
 
     const result = await coalesceRequest(cacheKey, async () => {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getTodayIST();
       const targetDate = date || today;
       
       // Get distinct center IDs that have pending/partial schedules for the target date
