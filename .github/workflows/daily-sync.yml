@@ -1,23 +1,25 @@
-name: Daily 6 PM Google Sheets Sync
+name: Daily 6 PM IST Google Sheets Sync
 
 on:
   schedule:
-    # 12:30 UTC is exactly 18:00 IST (6:00 PM India Standard Time)
+    # 12:30 UTC is exactly 18:00 IST (6:00 PM Indian Standard Time)
     - cron: '30 12 * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI anytime
 
 jobs:
   sync:
-    name: Sync Unbilled Collections to Google Sheets
+    name: Sync Unbilled Collections to Google Sheets (IST 6:00 PM)
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger 6 PM Sync on Cloud Backend
+      - name: Print Indian Standard Time & Trigger Sync
         run: |
-          echo "Starting daily 6 PM sync to Google Sheets..."
+          export TZ="Asia/Kolkata"
+          echo "Current Indian Standard Time (IST): $(date)"
+          echo "Triggering 6:00 PM IST Google Sheets sync..."
           RESPONSE=$(curl -s -X POST --retry 3 --retry-delay 10 --max-time 120 https://calloction.onrender.com/api/admin/sync-sheets)
           echo "Server Response: $RESPONSE"
           if echo "$RESPONSE" | grep -q "completed successfully"; then
-            echo "SUCCESS: Pending collections synced to Google Sheets successfully!"
+            echo "SUCCESS: Pending collections synced to Google Sheets successfully at Indian Time $(date)!"
           else
-            echo "WARNING: Response did not contain success message. Response was: $RESPONSE"
+            echo "WARNING: Response was: $RESPONSE"
           fi
