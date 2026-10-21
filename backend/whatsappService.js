@@ -204,6 +204,36 @@ class WhatsAppService {
     return lines.join('\n');
   }
 
+  generateForeclosureReceiptText({
+    memberName,
+    memberNo,
+    centerName,
+    date,
+    settlementAmount,
+    discountAmount,
+    totalLoan
+  }) {
+    const formattedDate = date || new Date().toLocaleDateString('en-GB');
+    const lines = [
+      `🎉 *SINDHUJA FINANCE - கடன் முடித்தல் ரசீது (NOC)*`,
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `👤 *பெயர்:* ${memberName || 'Member'}`,
+      memberNo ? `🔢 *உறுப்பினர் எண்:* ${memberNo}` : null,
+      centerName ? `📍 *சென்டர்:* ${centerName}` : null,
+      `📅 *முடிவு தேதி:* ${formattedDate}`,
+      totalLoan ? `💳 *மொத்த கடன்:* ₹${Number(totalLoan).toLocaleString('en-IN')}` : null,
+      Number(discountAmount) > 0 ? `🎁 *தள்ளுபடி (Rebate):* ₹${Number(discountAmount).toLocaleString('en-IN')}` : null,
+      `💵 *செலுத்திய தீர்வு தொகை:* ₹${Number(settlementAmount || 0).toLocaleString('en-IN')}`,
+      `📊 *மீதமுள்ள பாக்கி:* ₹0 (முழுமையாக முடிந்தது)`,
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `✅ *தங்களின் கடன் வெற்றிகரமாக முன்கூட்டியே முடிக்கப்பட்டது (LOAN CLOSED).*`,
+      `🌟 *தங்களின் அடுத்த புதிய கடனுக்கு உடனடியாக விண்ணப்பிக்கலாம்.*`,
+      `🙏 *நன்றி - சிந்துஜா பைனான்ஸ்!*`
+    ].filter(Boolean);
+
+    return lines.join('\n');
+  }
+
   // Send bills to multiple members with rate-limiting safety delay
   // If member's number fails, automatically fallback to nominee number
   async sendBatchBills(bills) {

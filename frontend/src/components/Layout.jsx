@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   FaSignOutAlt, FaShieldAlt, FaBars, FaTimes, FaChartPie,
-  FaListUl, FaFileInvoiceDollar, FaUsers, FaChartLine, FaCheckCircle
+  FaListUl, FaFileInvoiceDollar, FaUsers, FaChartLine, FaCheckCircle,
+  FaHandHoldingUsd
 } from 'react-icons/fa';
 import API_URL from '../apiConfig';
 
@@ -46,6 +47,7 @@ export default function Layout({ children }) {
 
   const navItems = [
     { name: 'Collections', path: '/collections', icon: <FaListUl /> },
+    { name: 'Foreclosure', path: '/foreclosure', icon: <FaHandHoldingUsd /> },
     { name: 'Dashboard', path: '/dashboard', icon: <FaChartPie /> },
   ];
 

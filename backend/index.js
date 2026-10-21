@@ -1007,6 +1007,237 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ============================================================
+// FORECLOSURE (LOAN SETTLEMENT) ENDPOINTS
+// ============================================================
+
+// 1. Search Active Loans for Foreclosure
+app.get('/api/foreclosure/loans', async (req, res) => {
+  try {
+    const { centerId, search, staffId } = req.query;
+
+    let query = supabase
+      .from('loans')
+      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, created_at, centers(name, staff_id), members(member_no)')
+      .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED']);
+
+    if (centerId) {
+      query = query.eq('center_id', centerId);
+    }
+
+    if (staffId) {
+      const { data: staffCenters } = await supabase.from('centers').select('id').ilike('staff_id', staffId);
+      const staffCenterIds = (staffCenters || []).map(c => c.id);
+      if (staffCenterIds.length > 0) {
+        query = query.in('center_id', staffCenterIds);
+      }
+    }
+
+    const { data: loans, error } = await query.order('id', { ascending: false });
+    if (error) throw error;
+
+    let filtered = loans || [];
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      filtered = filtered.filter(l => 
+        (l.member_name && l.member_name.toLowerCase().includes(q)) ||
+        (l.members?.member_no && String(l.members.member_no).toLowerCase().includes(q)) ||
+        (l.mobile_no && String(l.mobile_no).includes(q)) ||
+        (l.id && String(l.id).includes(q))
+      );
+    }
+
+    res.json(filtered);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Get Loan Full Foreclosure Breakdown
+app.get('/api/loans/:loanId/foreclosure-details', async (req, res) => {
+  try {
+    const { loanId } = req.params;
+
+    // Fetch loan
+    const { data: loan, error: loanErr } = await supabase
+      .from('loans')
+      .select('*, centers(name), members(member_no)')
+      .eq('id', loanId)
+      .single();
+
+    if (loanErr || !loan) {
+      return res.status(404).json({ error: 'Loan not found' });
+    }
+
+    // Fetch schedules
+    const { data: rawSchedules, error: schErr } = await supabase
+      .from('collection_schedules')
+      .select('*')
+      .eq('loan_id', loanId)
+      .order('scheduled_date', { ascending: true });
+
+    if (schErr) throw schErr;
+
+    const schedules = (rawSchedules || []).map(s => {
+      const penalty = getPenalty(s.scheduled_date, s.status);
+      const fullAmount = Number(s.amount) + penalty;
+      const collected = Number(s.collected_amount) || 0;
+      const due = fullAmount - collected;
+      return {
+        ...s,
+        penalty,
+        fullAmount,
+        collected,
+        due: Math.max(0, due)
+      };
+    });
+
+    const totalWeeks = schedules.length;
+    const paidWeeks = schedules.filter(s => ['Paid', 'Received', 'Verified'].includes(s.status)).length;
+    const pendingWeeks = totalWeeks - paidWeeks;
+
+    let totalCollected = 0;
+    let remainingEMISum = 0;
+    let totalPenalty = 0;
+
+    schedules.forEach(s => {
+      totalCollected += Number(s.collected_amount) || 0;
+      if (!['Paid', 'Received', 'Verified'].includes(s.status)) {
+        const remEMI = Math.max(0, Number(s.amount) - (Number(s.collected_amount) || 0));
+        remainingEMISum += remEMI;
+        totalPenalty += Number(s.penalty) || 0;
+      }
+    });
+
+    const grossSettlementAmount = remainingEMISum + totalPenalty;
+
+    res.json({
+      loan,
+      schedules,
+      summary: {
+        totalWeeks,
+        paidWeeks,
+        pendingWeeks,
+        totalCollected,
+        remainingEMISum,
+        totalPenalty,
+        grossSettlementAmount
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Process Full Foreclosure Settlement
+app.post('/api/loans/:loanId/foreclose', async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const { settlementAmount, discountAmount, paymentMode, remarks, approvedBy } = req.body;
+
+    const { data: loan, error: loanErr } = await supabase
+      .from('loans')
+      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, centers(name), members(member_no)')
+      .eq('id', loanId)
+      .single();
+
+    if (loanErr || !loan) {
+      return res.status(404).json({ error: 'Loan not found' });
+    }
+
+    // Fetch all unpaid schedules for this loan
+    const { data: unpaidSchedules, error: schErr } = await supabase
+      .from('collection_schedules')
+      .select('id, amount, collected_amount, status')
+      .eq('loan_id', loanId)
+      .not('status', 'in', '("Paid","Received","Verified")');
+
+    if (schErr) throw schErr;
+
+    const scheduleIds = (unpaidSchedules || []).map(s => s.id);
+
+    // Mark all schedules as 'Paid' in full
+    if (scheduleIds.length > 0) {
+      await Promise.all(
+        unpaidSchedules.map(s => 
+          supabase
+            .from('collection_schedules')
+            .update({
+              status: 'Paid',
+              collected_amount: s.amount,
+              approved_at: new Date().toISOString()
+            })
+            .eq('id', s.id)
+        )
+      );
+    }
+
+    // Update Loan to 'CLOSED'
+    const { data: closedLoan, error: closeErr } = await supabase
+      .from('loans')
+      .update({
+        status: 'CLOSED'
+      })
+      .eq('id', loanId)
+      .select('id, member_name, member_id, center_id')
+      .single();
+
+    if (closeErr) throw closeErr;
+
+    // Google Sheets Sync: Remove any pending rows for these schedules
+    if (scheduleIds.length > 0) {
+      const strIds = scheduleIds.map(id => String(id));
+      const numIds = scheduleIds.map(id => Number(id));
+      await syncToGoogleSheets('REMOVE_PAID', {
+        scheduleIds: [...strIds, ...numIds],
+        scheduleId: strIds[0],
+        ids: [...strIds, ...numIds]
+      });
+    }
+
+    // Send WhatsApp Foreclosure Receipt (NOC)
+    try {
+      const primaryPhone = loan.mobile_no;
+      const nomineePhone = loan.nominee_mobile;
+      const phone = primaryPhone || nomineePhone;
+
+      if (phone) {
+        const receiptText = whatsappService.generateForeclosureReceiptText({
+          memberName: loan.member_name,
+          memberNo: loan.members?.member_no || '',
+          centerName: loan.centers?.name || '',
+          date: new Date().toLocaleDateString('en-GB'),
+          settlementAmount: settlementAmount || 0,
+          discountAmount: discountAmount || 0,
+          totalLoan: loan.amount_sanctioned
+        });
+
+        const res1 = await whatsappService.sendMessage(phone, receiptText);
+        if (!res1.success && primaryPhone && nomineePhone) {
+          await whatsappService.sendMessage(nomineePhone, receiptText);
+        }
+      }
+    } catch (waErr) {
+      console.error('[WhatsApp] Foreclosure message error:', waErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Loan foreclosed and closed successfully!',
+      closedLoan: {
+        id: loan.id,
+        member_name: loan.member_name,
+        member_id: loan.member_id,
+        center_id: loan.center_id
+      }
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE Center (cascade: storage images → schedules → loans → center)
 app.delete('/api/centers/:id', async (req, res) => {
   const centerId = parseInt(req.params.id);
