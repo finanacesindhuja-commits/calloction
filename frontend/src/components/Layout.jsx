@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   FaSignOutAlt, FaShieldAlt, FaBars, FaTimes, FaChartPie,
   FaListUl, FaFileInvoiceDollar, FaUsers, FaChartLine, FaCheckCircle,
-  FaHandHoldingUsd, FaCoins
+  FaHandHoldingUsd, FaCoins, FaWhatsapp
 } from 'react-icons/fa';
 import API_URL from '../apiConfig';
 
@@ -15,9 +15,24 @@ export default function Layout({ children }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [stats, setStats] = useState({ targetToday: 0, activeCenters: 0, efficiency: 0, centerDues: [] });
   const [draftSubtracted, setDraftSubtracted] = useState(0);
+  const [waStatus, setWaStatus] = useState({ isConnected: false, loading: true });
+
+  const fetchWaStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/whatsapp/status`);
+      const data = await res.json();
+      setWaStatus({ isConnected: !!data.isConnected, status: data.status, loading: false, user: data.user });
+    } catch {
+      setWaStatus({ isConnected: false, loading: false });
+    }
+  };
 
   useEffect(() => {
     fetchStats();
+    fetchWaStatus();
+
+    // Poll WhatsApp status every 20 seconds so user always sees live status without testing
+    const waInterval = setInterval(fetchWaStatus, 20000);
 
     // Global listeners for realtime Collection UI updates
     const handleDraftUpdate = (e) => setDraftSubtracted(e.detail || 0);
@@ -27,6 +42,7 @@ export default function Layout({ children }) {
     window.addEventListener('collectionSubmitted', handleCollectionSubmit);
 
     return () => {
+      clearInterval(waInterval);
       window.removeEventListener('draftCollectionUpdate', handleDraftUpdate);
       window.removeEventListener('collectionSubmitted', handleCollectionSubmit);
     };
@@ -203,6 +219,35 @@ export default function Layout({ children }) {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* WhatsApp Live Status Pill */}
+            <a
+              href={`${API_URL || ''}/whatsapp`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={waStatus.isConnected ? 'WhatsApp Active & Connected' : 'WhatsApp Disconnected - Click to Scan QR'}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all border shadow-sm ${
+                waStatus.loading
+                  ? 'bg-slate-800/60 border-slate-700 text-slate-400'
+                  : waStatus.isConnected
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20 animate-pulse'
+              }`}
+            >
+              <FaWhatsapp className={waStatus.isConnected ? 'text-emerald-400 text-sm' : 'text-rose-400 text-sm'} />
+              <span className="hidden sm:inline">
+                {waStatus.loading ? 'Checking...' : waStatus.isConnected ? 'WA Active' : 'Scan WA QR'}
+              </span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  waStatus.loading
+                    ? 'bg-slate-500'
+                    : waStatus.isConnected
+                    ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                    : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]'
+                }`}
+              />
+            </a>
+
             <div className="text-right hidden sm:block">
               <p className="text-xs font-black text-white leading-none mb-1">{userName || 'Relationship Officer'}</p>
               <p className="text-[9px] text-blue-400 font-bold uppercase tracking-widest leading-none">{staffId || 'RO-Terminal'}</p>
