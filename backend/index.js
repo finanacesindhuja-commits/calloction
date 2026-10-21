@@ -1238,6 +1238,365 @@ app.post('/api/loans/:loanId/foreclose', async (req, res) => {
   }
 });
 
+// ============================================================
+// PENDING ARREARS SETTLEMENT (மொத்த நிலுவை வசூல்) ENDPOINTS
+// ============================================================
+
+// 1. Get All Members with Pending Overdue Dues
+app.get('/api/pending-settlement/members', async (req, res) => {
+  try {
+    const { centerId, search, staffId } = req.query;
+    const today = getTodayIST();
+
+    // Fetch all pending schedules due on or before today
+    let schQuery = supabase
+      .from('collection_schedules')
+      .select('id, loan_id, member_id, member_name, week_number, amount, collected_amount, scheduled_date, status, center_id')
+      .lte('scheduled_date', today)
+      .not('status', 'in', '("Paid","Received","Verified")')
+      .order('scheduled_date', { ascending: true });
+
+    if (centerId) {
+      schQuery = schQuery.eq('center_id', centerId);
+    }
+
+    if (staffId) {
+      const { data: staffCenters } = await supabase.from('centers').select('id').ilike('staff_id', staffId);
+      const staffCenterIds = (staffCenters || []).map(c => c.id);
+      if (staffCenterIds.length > 0) {
+        schQuery = schQuery.in('center_id', staffCenterIds);
+      } else {
+        return res.json([]);
+      }
+    }
+
+    const { data: pendingSchedules, error: schErr } = await schQuery;
+    if (schErr) throw schErr;
+    if (!pendingSchedules || pendingSchedules.length === 0) return res.json([]);
+
+    // Group schedules by loan_id
+    const loanGroupMap = {};
+    pendingSchedules.forEach(s => {
+      if (!s.loan_id) return;
+      if (!loanGroupMap[s.loan_id]) {
+        loanGroupMap[s.loan_id] = [];
+      }
+      loanGroupMap[s.loan_id].push(s);
+    });
+
+    const loanIds = Object.keys(loanGroupMap).map(Number);
+    if (loanIds.length === 0) return res.json([]);
+
+    // Fetch loan & member details
+    const { data: loansData, error: loansErr } = await supabase
+      .from('loans')
+      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, centers(name), members(member_no)')
+      .in('id', loanIds);
+
+    if (loansErr) throw loansErr;
+
+    const result = (loansData || []).map(loan => {
+      const schs = loanGroupMap[loan.id] || [];
+      let pendingEMITotal = 0;
+      let totalPenalty = 0;
+      const weeks = [];
+
+      schs.forEach(s => {
+        const penalty = getPenalty(s.scheduled_date, s.status);
+        const remEMI = Math.max(0, Number(s.amount) - (Number(s.collected_amount) || 0));
+        pendingEMITotal += remEMI;
+        totalPenalty += penalty;
+        if (s.week_number && !weeks.includes(s.week_number)) {
+          weeks.push(s.week_number);
+        }
+      });
+
+      return {
+        loanId: loan.id,
+        memberName: loan.member_name,
+        memberNo: loan.members?.member_no || 'N/A',
+        memberPhotoUrl: loan.member_photo_url,
+        centerName: loan.centers?.name || 'N/A',
+        centerId: loan.center_id,
+        mobileNo: loan.mobile_no || loan.nominee_mobile || '',
+        amountSanctioned: loan.amount_sanctioned,
+        pendingWeeksCount: schs.length,
+        weeks: weeks.sort((a,b) => a - b),
+        pendingEMITotal,
+        totalPenalty,
+        totalPendingDue: pendingEMITotal + totalPenalty,
+        schedules: schs
+      };
+    });
+
+    // Apply search filter if any
+    let filtered = result;
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      filtered = filtered.filter(item => 
+        (item.memberName && item.memberName.toLowerCase().includes(q)) ||
+        (item.memberNo && item.memberNo.toLowerCase().includes(q)) ||
+        (item.centerName && item.centerName.toLowerCase().includes(q)) ||
+        (item.mobileNo && item.mobileNo.includes(q)) ||
+        String(item.loanId).includes(q)
+      );
+    }
+
+    // Sort by largest pending due first
+    filtered.sort((a, b) => b.totalPendingDue - a.totalPendingDue);
+
+    res.json(filtered);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Get Single Loan Detailed Pending Breakdown
+app.get('/api/pending-settlement/loan/:loanId', async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const today = getTodayIST();
+
+    const { data: loan, error: loanErr } = await supabase
+      .from('loans')
+      .select('*, centers(name), members(member_no)')
+      .eq('id', loanId)
+      .single();
+
+    if (loanErr || !loan) return res.status(404).json({ error: 'Loan not found' });
+
+    // Fetch all schedules for this loan
+    const { data: schedules, error: schErr } = await supabase
+      .from('collection_schedules')
+      .select('*')
+      .eq('loan_id', loanId)
+      .order('scheduled_date', { ascending: true });
+
+    if (schErr) throw schErr;
+
+    const formattedSchedules = (schedules || []).map(s => {
+      const penalty = getPenalty(s.scheduled_date, s.status);
+      const isPastOrToday = s.scheduled_date <= today;
+      const isPaid = ['Paid', 'Received', 'Verified'].includes(s.status);
+      const remEMI = Math.max(0, Number(s.amount) - (Number(s.collected_amount) || 0));
+      const totalDue = remEMI + penalty;
+
+      return {
+        ...s,
+        penalty,
+        isPastOrToday,
+        isPaid,
+        remEMI,
+        totalDue
+      };
+    });
+
+    // Pending schedules only (scheduled_date <= today and not paid)
+    const pendingSchedules = formattedSchedules.filter(s => s.isPastOrToday && !s.isPaid);
+
+    let pendingEMITotal = 0;
+    let totalPenalty = 0;
+    pendingSchedules.forEach(s => {
+      pendingEMITotal += s.remEMI;
+      totalPenalty += s.penalty;
+    });
+
+    res.json({
+      loan,
+      allSchedules: formattedSchedules,
+      pendingSchedules,
+      summary: {
+        totalSchedules: formattedSchedules.length,
+        pendingCount: pendingSchedules.length,
+        pendingEMITotal,
+        totalPenalty,
+        grandTotalDue: pendingEMITotal + totalPenalty
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Process Pending Arrears Settlement (Waterfall Allocation)
+app.post('/api/pending-settlement/pay', async (req, res) => {
+  try {
+    const { loanId, amountPaid, waivePenalty, selectedScheduleIds, paymentMode, remarks } = req.body;
+    const today = getTodayIST();
+    const paidAmount = Number(amountPaid) || 0;
+
+    if (paidAmount <= 0) {
+      return res.status(400).json({ error: 'Amount paid must be greater than zero' });
+    }
+
+    // Fetch loan details
+    const { data: loan, error: loanErr } = await supabase
+      .from('loans')
+      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, centers(name), members(member_no)')
+      .eq('id', loanId)
+      .single();
+
+    if (loanErr || !loan) return res.status(404).json({ error: 'Loan not found' });
+
+    // Fetch pending schedules for this loan
+    let schQuery = supabase
+      .from('collection_schedules')
+      .select('*')
+      .eq('loan_id', loanId)
+      .not('status', 'in', '("Paid","Received","Verified")')
+      .order('scheduled_date', { ascending: true });
+
+    if (selectedScheduleIds && selectedScheduleIds.length > 0) {
+      schQuery = schQuery.in('id', selectedScheduleIds);
+    } else {
+      schQuery = schQuery.lte('scheduled_date', today);
+    }
+
+    const { data: schedulesToProcess, error: schErr } = await schQuery;
+    if (schErr) throw schErr;
+    if (!schedulesToProcess || schedulesToProcess.length === 0) {
+      return res.status(400).json({ error: 'No pending schedules to settle' });
+    }
+
+    let remainingCash = paidAmount;
+    const updates = [];
+    const settledWeeks = [];
+    let waivedPenaltyTotal = 0;
+
+    for (const sch of schedulesToProcess) {
+      if (remainingCash <= 0) break;
+
+      const penalty = waivePenalty ? 0 : getPenalty(sch.scheduled_date, sch.status);
+      if (waivePenalty) {
+        waivedPenaltyTotal += getPenalty(sch.scheduled_date, sch.status);
+      }
+
+      const targetForThisSchedule = Number(sch.amount) + penalty;
+      const alreadyCollected = Number(sch.collected_amount) || 0;
+      const dueOnSchedule = Math.max(0, targetForThisSchedule - alreadyCollected);
+
+      const allocation = Math.min(remainingCash, dueOnSchedule > 0 ? dueOnSchedule : remainingCash);
+      const newCollectedTotal = alreadyCollected + allocation;
+      remainingCash -= allocation;
+
+      let newStatus = 'Pending';
+      if (newCollectedTotal >= targetForThisSchedule) {
+        newStatus = 'Paid';
+        if (sch.week_number) settledWeeks.push(`Week ${sch.week_number}`);
+      } else if (newCollectedTotal > 0) {
+        newStatus = 'Partial';
+      }
+
+      updates.push({
+        id: sch.id,
+        collected_amount: newCollectedTotal,
+        status: newStatus,
+        approved_at: new Date().toISOString()
+      });
+    }
+
+    // Apply updates to collection_schedules
+    await Promise.all(
+      updates.map(u => 
+        supabase
+          .from('collection_schedules')
+          .update({
+            collected_amount: u.collected_amount,
+            status: u.status,
+            approved_at: u.approved_at
+          })
+          .eq('id', u.id)
+      )
+    );
+
+    // Google Sheets Sync: Remove any schedules that turned 'Paid'
+    const newlyPaidIds = updates.filter(u => u.status === 'Paid').map(u => u.id);
+    if (newlyPaidIds.length > 0) {
+      const strIds = newlyPaidIds.map(id => String(id));
+      const numIds = newlyPaidIds.map(id => Number(id));
+      await syncToGoogleSheets('REMOVE_PAID', {
+        scheduleIds: [...strIds, ...numIds],
+        scheduleId: strIds[0],
+        ids: [...strIds, ...numIds]
+      });
+    }
+
+    // Check if entire loan is now fully cleared / closed
+    const { data: allLoanSchedules } = await supabase
+      .from('collection_schedules')
+      .select('status')
+      .eq('loan_id', loanId);
+
+    let isFullyPaid = false;
+    let closedLoan = null;
+    if (allLoanSchedules && allLoanSchedules.length > 0) {
+      isFullyPaid = allLoanSchedules.every(s => ['Paid', 'Received', 'Verified'].includes(s.status));
+      if (isFullyPaid) {
+        const { data: closed } = await supabase
+          .from('loans')
+          .update({ status: 'CLOSED' })
+          .eq('id', loanId)
+          .select('id, member_name, member_id, center_id')
+          .single();
+        closedLoan = closed || null;
+      }
+    }
+
+    // Calculate remaining loan balance
+    let remainingLoanBal = 0;
+    const { data: freshSchedules } = await supabase
+      .from('collection_schedules')
+      .select('amount, collected_amount, status')
+      .eq('loan_id', loanId);
+
+    (freshSchedules || []).forEach(s => {
+      if (!['Paid', 'Received', 'Verified'].includes(s.status)) {
+        const d = Number(s.amount) - (Number(s.collected_amount) || 0);
+        if (d > 0) remainingLoanBal += d;
+      }
+    });
+
+    // Send WhatsApp settlement receipt
+    try {
+      const primaryPhone = loan.mobile_no;
+      const nomineePhone = loan.nominee_mobile;
+      const phone = primaryPhone || nomineePhone;
+
+      if (phone) {
+        const receiptText = whatsappService.generatePendingSettlementReceiptText({
+          memberName: loan.member_name,
+          memberNo: loan.members?.member_no || '',
+          centerName: loan.centers?.name || '',
+          date: new Date().toLocaleDateString('en-GB'),
+          amountPaid: paidAmount,
+          settledWeeks,
+          waivedPenalty: waivedPenaltyTotal,
+          remainingBalance: remainingLoanBal
+        });
+
+        const res1 = await whatsappService.sendMessage(phone, receiptText);
+        if (!res1.success && primaryPhone && nomineePhone) {
+          await whatsappService.sendMessage(nomineePhone, receiptText);
+        }
+      }
+    } catch (waErr) {
+      console.error('[WhatsApp] Settlement receipt error:', waErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Pending settlement processed successfully!',
+      settledWeeks,
+      totalPaid: paidAmount,
+      remainingLoanBalance: remainingLoanBal,
+      closedLoan
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE Center (cascade: storage images → schedules → loans → center)
 app.delete('/api/centers/:id', async (req, res) => {
   const centerId = parseInt(req.params.id);

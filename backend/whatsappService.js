@@ -234,6 +234,36 @@ class WhatsAppService {
     return lines.join('\n');
   }
 
+  generatePendingSettlementReceiptText({
+    memberName,
+    memberNo,
+    centerName,
+    date,
+    amountPaid,
+    settledWeeks,
+    waivedPenalty,
+    remainingBalance
+  }) {
+    const formattedDate = date || new Date().toLocaleDateString('en-GB');
+    const lines = [
+      `🧾 *SINDHUJA FINANCE - நிலுவைத் தொகை ரசீது*`,
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `👤 *பெயர்:* ${memberName || 'Member'}`,
+      memberNo ? `🔢 *உறுப்பினர் எண்:* ${memberNo}` : null,
+      centerName ? `📍 *சென்டர்:* ${centerName}` : null,
+      `📅 *தேதி:* ${formattedDate}`,
+      settledWeeks && settledWeeks.length > 0 ? `📆 *முடிந்த வாரங்கள்:* ${settledWeeks.join(', ')}` : null,
+      `💵 *செலுத்திய மொத்த தொகை:* ₹${Number(amountPaid || 0).toLocaleString('en-IN')}`,
+      Number(waivedPenalty) > 0 ? `🎁 *தள்ளுபடி செய்த அபராதம்:* ₹${Number(waivedPenalty).toLocaleString('en-IN')}` : null,
+      (remainingBalance !== undefined && remainingBalance !== null) ? `📊 *மீதமுள்ள மொத்த பாக்கி:* ₹${Number(remainingBalance).toLocaleString('en-IN')}` : null,
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `✅ *தங்களின் நிலுவைத் தொகை வெற்றிகரமாக வரவு வைக்கப்பட்டது.*`,
+      `🙏 *நன்றி - சிந்துஜா பைனான்ஸ்!*`
+    ].filter(Boolean);
+
+    return lines.join('\n');
+  }
+
   // Send bills to multiple members with rate-limiting safety delay
   // If member's number fails, automatically fallback to nominee number
   async sendBatchBills(bills) {
