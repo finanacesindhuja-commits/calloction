@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   FaCoins, FaSearch, FaCheckCircle, FaExclamationCircle, 
@@ -31,31 +31,51 @@ export default function PendingSettlement() {
   // Notification state
   const [notification, setNotification] = useState(null);
 
+  // Abort controller ref for cancelling in-flight requests
+  const abortRef = useRef(null);
+  // Debounce timer ref
+  const debounceRef = useRef(null);
+
   useEffect(() => {
-    fetchPendingMembers();
+    fetchPendingMembers('');
   }, []);
 
-  const fetchPendingMembers = async (search = searchTerm) => {
+  const fetchPendingMembers = useCallback(async (search) => {
+    // Cancel any previous in-flight request
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
+
     setLoading(true);
     try {
-      let url = `${API_URL}/api/pending-settlement/members?staffId=${staffId || ''}`;
-      if (search) url += `&search=${encodeURIComponent(search)}`;
+      // When searching, skip staffId filtering entirely so all members are reachable
+      let url;
+      if (search && search.trim()) {
+        url = `${API_URL}/api/pending-settlement/members?search=${encodeURIComponent(search.trim())}`;
+      } else {
+        url = `${API_URL}/api/pending-settlement/members?staffId=`;
+      }
 
-      const res = await fetch(url);
+      const res = await fetch(url, { signal });
       if (res.ok) {
         const data = await res.json();
-        setPendingMembers(data);
+        setPendingMembers(Array.isArray(data) ? data : []);
       }
     } catch (err) {
+      if (err.name === 'AbortError') return; // Stale request cancelled — ignore
       console.error('Error fetching pending members:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [staffId]);
 
   const handleSearchChange = (val) => {
     setSearchTerm(val);
-    fetchPendingMembers(val);
+    // Debounce: wait 350ms after last keystroke before firing request
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchPendingMembers(val);
+    }, 350);
   };
 
   const handleOpenSettlement = async (loanId) => {
