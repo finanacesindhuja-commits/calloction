@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+
 // Centralized API configuration
 let API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -5,15 +7,24 @@ let API_URL = import.meta.env.VITE_API_URL || '';
 // so API requests go directly to the local backend (port 5007 or proxied 3007)
 // instead of hitting outdated external cloud instances
 if (typeof window !== 'undefined' && window.location) {
+  const isNative = typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform();
   const host = window.location.hostname;
-  if (
-    host === 'localhost' ||
-    host === '127.0.0.1' ||
-    host.startsWith('192.168.') ||
-    host.startsWith('10.') ||
-    host.endsWith('.local')
-  ) {
-    API_URL = '';
+  
+  if (!isNative) {
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.startsWith('192.168.') ||
+      host.startsWith('10.') ||
+      host.endsWith('.local')
+    ) {
+      API_URL = '';
+    }
+  } else {
+    // On native Android/iOS app
+    if (!API_URL) {
+      API_URL = 'https://calloction.onrender.com';
+    }
   }
 }
 
