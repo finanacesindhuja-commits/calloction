@@ -138,11 +138,18 @@ export default function Collections() {
   // Only show members who actually have a pending target for the selected date
   const activeMembersForDate = members.filter(m => memberTargets[m.id]?.amount > 0);
 
-  const filteredMembers = activeMembersForDate.filter(m => 
-    m.member_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    m.id?.toString().includes(searchTerm) ||
-    m.member_no?.toString().toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredMembers = activeMembersForDate.filter(m => {
+    const q = searchTerm.trim().toLowerCase();
+    const cleanQ = q.replace(/[\s-]/g, '');
+    const memNo = (m.member_no || m.members?.member_no || '').toString().toLowerCase();
+    const cleanMemNo = memNo.replace(/[\s-]/g, '');
+
+    return (
+      m.member_name?.toLowerCase().includes(q) ||
+      m.id?.toString().includes(q) ||
+      (memNo && (memNo.includes(q) || cleanMemNo.includes(cleanQ)))
+    );
+  });
 
   // Overall calculations for the Center Date View
   let totalCenterTarget = 0;

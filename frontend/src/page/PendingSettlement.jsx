@@ -323,9 +323,15 @@ export default function PendingSettlement() {
                 <div className="bg-slate-900/60 rounded-2xl p-3 border border-white/5 mb-4 space-y-2">
                   <div className="flex justify-between items-center text-xs">
                     <span className="text-slate-400 font-medium">Pending Weeks:</span>
-                    <span className="px-2 py-0.5 rounded-md bg-red-500/10 text-red-400 font-bold text-[11px]">
-                      {item.pendingWeeksCount} wks ({item.weeks.map(w => `W${w}`).join(', ')})
-                    </span>
+                    {item.pendingWeeksCount > 0 ? (
+                      <span className="px-2 py-0.5 rounded-md bg-red-500/10 text-red-400 font-bold text-[11px]">
+                        {item.pendingWeeksCount} wks ({item.weeks.map(w => `W${w}`).join(', ')})
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 font-bold text-[11px]">
+                        ✓ All Paid to Date (0 Arrears)
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex justify-between items-center text-xs">
@@ -342,16 +348,30 @@ export default function PendingSettlement() {
 
                   <div className="pt-2 border-t border-white/5 flex justify-between items-baseline">
                     <span className="text-[10px] font-black uppercase text-amber-400">Total Pending Due:</span>
-                    <span className="text-xl font-black text-white font-mono">₹{item.totalPendingDue.toLocaleString()}</span>
+                    <span className={`text-xl font-black font-mono ${item.totalPendingDue > 0 ? 'text-white' : 'text-emerald-400'}`}>
+                      {item.totalPendingDue > 0 ? `₹${item.totalPendingDue.toLocaleString()}` : '₹0 (Clear)'}
+                    </span>
                   </div>
                 </div>
               </div>
 
               <button
                 onClick={() => handleOpenSettlement(item.loanId)}
-                className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 active:scale-95 shadow-lg shadow-amber-500/20"
+                className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 active:scale-95 shadow-lg ${
+                  item.pendingWeeksCount > 0
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
+                    : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20'
+                }`}
               >
-                <FaReceipt /> Settle Dues <FaArrowRight size={10} />
+                {item.pendingWeeksCount > 0 ? (
+                  <>
+                    <FaReceipt /> Settle Dues ({item.pendingWeeksCount} Wks) <FaArrowRight size={10} />
+                  </>
+                ) : (
+                  <>
+                    <FaHistory /> View History / Foreclose <FaArrowRight size={10} />
+                  </>
+                )}
               </button>
             </div>
           ))}

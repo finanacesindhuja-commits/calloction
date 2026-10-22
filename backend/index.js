@@ -1023,18 +1023,19 @@ app.get('/api/foreclosure/loans', async (req, res) => {
     let query = supabase
       .from('loans')
       .select('id, member_id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, created_at, centers(name, staff_id), members(id, member_no)')
-      .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED']);
+      .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED']);
 
-    // If searching by keyword, don't restrict to centerId so member can be tracked across any center
-    if (centerId && (!search || !search.trim())) {
-      query = query.eq('center_id', centerId);
-    }
-
-    if (staffId) {
-      const { data: staffCenters } = await supabase.from('centers').select('id').ilike('staff_id', staffId);
-      const staffCenterIds = (staffCenters || []).map(c => c.id);
-      if (staffCenterIds.length > 0) {
-        query = query.in('center_id', staffCenterIds);
+    // If searching by keyword, don't restrict to centerId or staffId so member can be tracked anywhere
+    if (!search || !search.trim()) {
+      if (centerId) {
+        query = query.eq('center_id', centerId);
+      }
+      if (staffId) {
+        const { data: staffCenters } = await supabase.from('centers').select('id').ilike('staff_id', staffId);
+        const staffCenterIds = (staffCenters || []).map(c => c.id);
+        if (staffCenterIds.length > 0) {
+          query = query.in('center_id', staffCenterIds);
+        }
       }
     }
 
@@ -1044,16 +1045,21 @@ app.get('/api/foreclosure/loans', async (req, res) => {
     let filtered = loans || [];
     if (search && search.trim()) {
       const q = search.trim().toLowerCase();
-      filtered = filtered.filter(l => 
-        (l.member_name && l.member_name.toLowerCase().includes(q)) ||
-        (l.member_id && String(l.member_id).toLowerCase().includes(q)) ||
-        (l.members?.id && String(l.members.id).toLowerCase().includes(q)) ||
-        (l.members?.member_no && String(l.members.member_no).toLowerCase().includes(q)) ||
-        (l.mobile_no && String(l.mobile_no).includes(q)) ||
-        (l.nominee_mobile && String(l.nominee_mobile).includes(q)) ||
-        (l.id && String(l.id).includes(q)) ||
-        (l.centers?.name && l.centers.name.toLowerCase().includes(q))
-      );
+      const cleanQ = q.replace(/[\s-]/g, '');
+      filtered = filtered.filter(l => {
+        const memNo = l.members?.member_no ? String(l.members.member_no).toLowerCase() : '';
+        const cleanMemNo = memNo.replace(/[\s-]/g, '');
+        return (
+          (l.member_name && l.member_name.toLowerCase().includes(q)) ||
+          (l.member_id && String(l.member_id).toLowerCase().includes(q)) ||
+          (l.members?.id && String(l.members.id).toLowerCase().includes(q)) ||
+          (memNo && (memNo.includes(q) || cleanMemNo.includes(cleanQ))) ||
+          (l.mobile_no && String(l.mobile_no).includes(q)) ||
+          (l.nominee_mobile && String(l.nominee_mobile).includes(q)) ||
+          (l.id && String(l.id).includes(q)) ||
+          (l.centers?.name && l.centers.name.toLowerCase().includes(q))
+        );
+      });
     }
 
     res.json(filtered);
@@ -1256,7 +1262,92 @@ app.get('/api/pending-settlement/members', async (req, res) => {
     const { centerId, search, staffId } = req.query;
     const today = getTodayIST();
 
-    // Fetch all pending schedules due on or before today
+    // CASE A: User is actively searching by Member ID / Member No / LN / Name / Loan ID
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      const cleanQ = q.replace(/[\s-]/g, '');
+
+      const { data: allLoans, error: loansErr } = await supabase
+        .from('loans')
+        .select('id, member_id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, centers(name), members(id, member_no)')
+        .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED']);
+
+      if (loansErr) throw loansErr;
+
+      const matchedLoans = (allLoans || []).filter(l => {
+        const memNo = l.members?.member_no ? String(l.members.member_no).toLowerCase() : '';
+        const cleanMemNo = memNo.replace(/[\s-]/g, '');
+        return (
+          (l.member_name && l.member_name.toLowerCase().includes(q)) ||
+          (l.member_id && String(l.member_id).toLowerCase().includes(q)) ||
+          (l.members?.id && String(l.members.id).toLowerCase().includes(q)) ||
+          (memNo && (memNo.includes(q) || cleanMemNo.includes(cleanQ))) ||
+          (l.mobile_no && String(l.mobile_no).includes(q)) ||
+          (l.nominee_mobile && String(l.nominee_mobile).includes(q)) ||
+          (l.id && String(l.id).includes(q)) ||
+          (l.centers?.name && l.centers.name.toLowerCase().includes(q))
+        );
+      });
+
+      if (matchedLoans.length === 0) return res.json([]);
+
+      const loanIds = matchedLoans.map(l => l.id);
+      const { data: allSchedules, error: schErr } = await supabase
+        .from('collection_schedules')
+        .select('*')
+        .in('loan_id', loanIds)
+        .order('scheduled_date', { ascending: true });
+
+      if (schErr) throw schErr;
+
+      const schMap = {};
+      (allSchedules || []).forEach(s => {
+        if (!schMap[s.loan_id]) schMap[s.loan_id] = [];
+        schMap[s.loan_id].push(s);
+      });
+
+      const results = matchedLoans.map(loan => {
+        const schs = schMap[loan.id] || [];
+        const pendingSchs = schs.filter(s => s.scheduled_date <= today && !['Paid', 'Received', 'Verified'].includes(s.status));
+        
+        let pendingEMITotal = 0;
+        let totalPenalty = 0;
+        const weeks = [];
+
+        pendingSchs.forEach(s => {
+          const penalty = getPenalty(s.scheduled_date, s.status);
+          const remEMI = Math.max(0, Number(s.amount) - (Number(s.collected_amount) || 0));
+          pendingEMITotal += remEMI;
+          totalPenalty += penalty;
+          if (s.week_number && !weeks.includes(s.week_number)) {
+            weeks.push(s.week_number);
+          }
+        });
+
+        return {
+          loanId: loan.id,
+          memberId: loan.member_id || loan.members?.id,
+          memberName: loan.member_name,
+          memberNo: loan.members?.member_no || 'N/A',
+          memberPhotoUrl: loan.member_photo_url,
+          centerName: loan.centers?.name || 'N/A',
+          centerId: loan.center_id,
+          mobileNo: loan.mobile_no || loan.nominee_mobile || '',
+          amountSanctioned: loan.amount_sanctioned,
+          pendingWeeksCount: pendingSchs.length,
+          weeks: weeks.sort((a,b) => a - b),
+          pendingEMITotal,
+          totalPenalty,
+          totalPendingDue: pendingEMITotal + totalPenalty,
+          schedules: pendingSchs
+        };
+      });
+
+      results.sort((a, b) => b.totalPendingDue - a.totalPendingDue);
+      return res.json(results);
+    }
+
+    // CASE B: Default View — Fetch all pending schedules due on or before today
     let schQuery = supabase
       .from('collection_schedules')
       .select('id, loan_id, member_id, member_name, week_number, amount, collected_amount, scheduled_date, status, center_id')
@@ -1264,8 +1355,7 @@ app.get('/api/pending-settlement/members', async (req, res) => {
       .not('status', 'in', '("Paid","Received","Verified")')
       .order('scheduled_date', { ascending: true });
 
-    // If searching by keyword, don't restrict to centerId so member can be tracked across any center
-    if (centerId && (!search || !search.trim())) {
+    if (centerId) {
       schQuery = schQuery.eq('center_id', centerId);
     }
 
@@ -1339,24 +1429,10 @@ app.get('/api/pending-settlement/members', async (req, res) => {
       };
     });
 
-    // Apply search filter if any
-    let filtered = result;
-    if (search && search.trim()) {
-      const q = search.trim().toLowerCase();
-      filtered = filtered.filter(item => 
-        (item.memberName && item.memberName.toLowerCase().includes(q)) ||
-        (item.memberId && String(item.memberId).toLowerCase().includes(q)) ||
-        (item.memberNo && item.memberNo.toLowerCase().includes(q)) ||
-        (item.centerName && item.centerName.toLowerCase().includes(q)) ||
-        (item.mobileNo && item.mobileNo.includes(q)) ||
-        String(item.loanId).includes(q)
-      );
-    }
-
     // Sort by largest pending due first
-    filtered.sort((a, b) => b.totalPendingDue - a.totalPendingDue);
+    result.sort((a, b) => b.totalPendingDue - a.totalPendingDue);
 
-    res.json(filtered);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
