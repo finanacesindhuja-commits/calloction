@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   FaCoins, FaSearch, FaCheckCircle, FaExclamationCircle, 
   FaCalendarAlt, FaTimes, FaShieldAlt, FaReceipt, FaArrowRight,
-  FaCheck, FaUndo, FaPercentage
+  FaCheck, FaUndo, FaPercentage, FaHistory, FaHandHoldingUsd
 } from 'react-icons/fa';
 import API_URL, { LOAN_APP_URL } from '../apiConfig';
 
 export default function PendingSettlement() {
+  const navigate = useNavigate();
   const staffId = localStorage.getItem('staffId');
-  const [centers, setCenters] = useState([]);
-  const [selectedCenter, setSelectedCenter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [pendingMembers, setPendingMembers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -18,6 +18,7 @@ export default function PendingSettlement() {
   const [selectedLoanId, setSelectedLoanId] = useState(null);
   const [detailData, setDetailData] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [activeModalTab, setActiveModalTab] = useState('settle'); // 'settle' | 'history'
 
   // Settlement Form State
   const [selectedScheduleIds, setSelectedScheduleIds] = useState([]);
@@ -31,27 +32,13 @@ export default function PendingSettlement() {
   const [notification, setNotification] = useState(null);
 
   useEffect(() => {
-    fetchCenters();
     fetchPendingMembers();
   }, []);
 
-  const fetchCenters = async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/centers?staffId=${staffId || ''}`);
-      if (res.ok) {
-        const data = await res.json();
-        setCenters(data);
-      }
-    } catch (err) {
-      console.error('Error fetching centers:', err);
-    }
-  };
-
-  const fetchPendingMembers = async (centerId = selectedCenter, search = searchTerm) => {
+  const fetchPendingMembers = async (search = searchTerm) => {
     setLoading(true);
     try {
       let url = `${API_URL}/api/pending-settlement/members?staffId=${staffId || ''}`;
-      if (centerId) url += `&centerId=${centerId}`;
       if (search) url += `&search=${encodeURIComponent(search)}`;
 
       const res = await fetch(url);
@@ -66,14 +53,9 @@ export default function PendingSettlement() {
     }
   };
 
-  const handleCenterChange = (centerId) => {
-    setSelectedCenter(centerId);
-    fetchPendingMembers(centerId, searchTerm);
-  };
-
   const handleSearchChange = (val) => {
     setSearchTerm(val);
-    fetchPendingMembers(selectedCenter, val);
+    fetchPendingMembers(val);
   };
 
   const handleOpenSettlement = async (loanId) => {
@@ -217,7 +199,7 @@ export default function PendingSettlement() {
       const data = await res.json();
       if (res.ok && data.success) {
         handleCloseModal();
-        fetchPendingMembers(selectedCenter, searchTerm);
+        fetchPendingMembers(searchTerm);
 
         if (data.closedLoan) {
           setNotification({
@@ -265,38 +247,29 @@ export default function PendingSettlement() {
         </div>
       </div>
 
-      {/* Filter and Search Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mb-8">
-        <div className="md:col-span-5 bg-white/5 border border-white/10 p-4 rounded-3xl backdrop-blur-xl">
-          <label className="block text-[10px] font-black text-amber-400 uppercase tracking-widest mb-2 ml-1">
-            Filter by Active Center
-          </label>
-          <select
-            value={selectedCenter}
-            onChange={(e) => handleCenterChange(e.target.value)}
-            className="w-full bg-slate-900 border border-white/10 text-white rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all cursor-pointer"
-          >
-            <option value="">-- All Active Centers --</option>
-            {centers.map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="md:col-span-7 bg-white/5 border border-white/10 p-4 rounded-3xl backdrop-blur-xl">
-          <label className="block text-[10px] font-black text-amber-400 uppercase tracking-widest mb-2 ml-1">
-            Search Member ID / No / Loan
-          </label>
-          <div className="relative">
-            <FaSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input
-              type="text"
-              placeholder="Search by Member ID, Member No (e.g. LN-...), Name, Loan ID..."
-              value={searchTerm}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              className="w-full bg-slate-900 border border-white/10 text-white rounded-2xl pl-11 pr-4 py-3 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all placeholder-slate-600"
-            />
-          </div>
+      {/* Hero Member Search Bar */}
+      <div className="bg-white/5 border border-white/10 p-5 rounded-3xl backdrop-blur-xl mb-8">
+        <label className="block text-[10px] font-black text-amber-400 uppercase tracking-widest mb-2 ml-1">
+          Search Member by ID, Member No, Name or Loan ID
+        </label>
+        <div className="relative">
+          <FaSearch className="absolute left-5 top-1/2 -translate-y-1/2 text-amber-400 text-lg" />
+          <input
+            type="text"
+            placeholder="Type Member ID (e.g. 133), Member No (e.g. LN-370408), Name, Loan ID..."
+            value={searchTerm}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            className="w-full bg-slate-900/90 border border-amber-500/30 text-white rounded-2xl pl-14 pr-12 py-4 text-base focus:ring-2 focus:ring-amber-500 outline-none transition-all placeholder-slate-500"
+          />
+          {searchTerm && (
+            <button
+              onClick={() => handleSearchChange('')}
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-2"
+              title="Clear search"
+            >
+              <FaTimes />
+            </button>
+          )}
         </div>
       </div>
 
@@ -407,15 +380,15 @@ export default function PendingSettlement() {
               <FaTimes />
             </button>
 
-            {/* Modal Title */}
+            {/* Modal Title & Member Info */}
             <div className="mb-4">
               <div className="inline-flex items-center gap-2 text-[10px] font-black text-amber-400 uppercase tracking-widest mb-1">
-                <FaCoins /> Pending Dues Settlement & Adjustment
+                <FaCoins /> Member Arrears & Settlement Portal
               </div>
               <h2 className="text-2xl font-black text-white tracking-tight">
                 {detailData?.loan?.member_name || 'Member Settlement'}
               </h2>
-              <div className="flex items-center gap-2 flex-wrap text-xs text-slate-400 mt-1">
+              <div className="flex items-center gap-2 flex-wrap text-xs text-slate-400 mt-1.5">
                 <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 font-mono font-bold text-[11px] border border-amber-500/20">
                   Member ID: #{detailData?.loan?.member_id || detailData?.loan?.members?.id || 'N/A'}
                 </span>
@@ -425,10 +398,41 @@ export default function PendingSettlement() {
                 <span className="px-2 py-0.5 rounded bg-white/5 text-slate-300 font-mono text-[11px]">
                   Loan #{selectedLoanId}
                 </span>
-                <span className="text-amber-300 font-bold uppercase">
-                  • Center: {detailData?.loan?.centers?.name}
+                <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 font-bold uppercase text-[11px] border border-blue-500/20">
+                  Center: {detailData?.loan?.centers?.name}
                 </span>
+                {detailData?.loan?.mobile_no && (
+                  <span className="text-slate-400 font-mono text-[11px]">
+                    📱 {detailData.loan.mobile_no}
+                  </span>
+                )}
               </div>
+            </div>
+
+            {/* Modal Navigation Tabs */}
+            <div className="flex border-b border-white/10 mb-4 gap-2">
+              <button
+                onClick={() => setActiveModalTab('settle')}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
+                  activeModalTab === 'settle'
+                    ? 'border-amber-500 text-amber-400 bg-amber-500/5'
+                    : 'border-transparent text-slate-400 hover:text-white'
+                }`}
+              >
+                <FaReceipt size={12} />
+                Settle Dues ({detailData?.pendingSchedules?.length || 0} Pending)
+              </button>
+              <button
+                onClick={() => setActiveModalTab('history')}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
+                  activeModalTab === 'history'
+                    ? 'border-amber-500 text-amber-400 bg-amber-500/5'
+                    : 'border-transparent text-slate-400 hover:text-white'
+                }`}
+              >
+                <FaHistory size={12} />
+                Collection History ({detailData?.allSchedules?.length || 0} Weeks)
+              </button>
             </div>
 
             {detailsLoading ? (
@@ -437,6 +441,145 @@ export default function PendingSettlement() {
               </div>
             ) : detailData ? (
               <div className="flex-1 overflow-y-auto pr-1 space-y-5">
+                {activeModalTab === 'history' ? (
+                  /* FULL COLLECTION HISTORY VIEW */
+                  <div className="space-y-4">
+                    {/* History Summary Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div className="bg-slate-900/80 border border-white/5 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-slate-500">Total Weeks</p>
+                        <p className="text-base font-black text-white">{detailData.allSchedules?.length || 0}</p>
+                      </div>
+                      <div className="bg-emerald-500/5 border border-emerald-500/10 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-emerald-400">Paid Weeks</p>
+                        <p className="text-base font-black text-emerald-400">
+                          {detailData.allSchedules?.filter(s => s.isPaid).length || 0}
+                        </p>
+                      </div>
+                      <div className="bg-rose-500/5 border border-rose-500/10 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-rose-400">Pending / Overdue</p>
+                        <p className="text-base font-black text-rose-400">
+                          {detailData.pendingSchedules?.length || 0}
+                        </p>
+                      </div>
+                      <div className="bg-amber-500/5 border border-amber-500/10 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-amber-400">Total Due</p>
+                        <p className="text-base font-black text-white font-mono">
+                          ₹{(detailData.summary?.grandTotalDue || 0).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Timeline List of All Weeks */}
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">
+                        Complete Repayment Timeline:
+                      </p>
+                      <div className="space-y-2 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
+                        {(detailData.allSchedules || []).map(sch => (
+                          <div
+                            key={sch.id}
+                            className={`p-3 rounded-2xl border transition-all flex items-center justify-between ${
+                              sch.isPaid
+                                ? 'bg-emerald-500/[0.04] border-emerald-500/10'
+                                : sch.isPastOrToday
+                                ? 'bg-rose-500/[0.04] border-rose-500/20'
+                                : 'bg-slate-900/40 border-white/5 opacity-70'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={`w-9 h-9 rounded-xl flex items-center justify-center font-mono font-black text-xs ${
+                                  sch.isPaid
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                    : sch.isPastOrToday
+                                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                    : 'bg-slate-800 text-slate-500'
+                                }`}
+                              >
+                                W{sch.week_number}
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs font-bold text-white">Date: {sch.scheduled_date}</p>
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider ${
+                                      sch.isPaid
+                                        ? 'bg-emerald-500/20 text-emerald-400'
+                                        : sch.status === 'Partial'
+                                        ? 'bg-yellow-500/20 text-yellow-400'
+                                        : sch.isPastOrToday
+                                        ? 'bg-rose-500/20 text-rose-400'
+                                        : 'bg-slate-800 text-slate-400'
+                                    }`}
+                                  >
+                                    {sch.isPaid ? 'Paid' : sch.status === 'Partial' ? 'Partial' : sch.isPastOrToday ? 'Overdue' : 'Upcoming'}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 mt-0.5">
+                                  EMI: ₹{Number(sch.amount).toLocaleString()}
+                                  {Number(sch.collected_amount || 0) > 0 && (
+                                    <span className="text-emerald-400 font-bold ml-1.5">
+                                      • Collected: ₹{Number(sch.collected_amount).toLocaleString()}
+                                    </span>
+                                  )}
+                                  {sch.penalty > 0 && (
+                                    <span className="text-yellow-400 font-bold ml-1.5">
+                                      • Late Fee: +₹{sch.penalty}
+                                    </span>
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div>
+                              {!sch.isPaid && sch.isPastOrToday && (
+                                <button
+                                  onClick={() => {
+                                    setSelectedScheduleIds([sch.id]);
+                                    recalculateTarget([sch.id], waivePenalty);
+                                    setActiveModalTab('settle');
+                                  }}
+                                  className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 font-bold text-xs transition-all flex items-center gap-1 shadow-sm"
+                                >
+                                  Settle
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Quick Bottom Actions from History View */}
+                    <div className="pt-2 flex flex-col sm:flex-row gap-2 border-t border-white/5">
+                      {detailData.pendingSchedules && detailData.pendingSchedules.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const allIds = detailData.pendingSchedules.map(s => s.id);
+                            setSelectedScheduleIds(allIds);
+                            recalculateTarget(allIds, waivePenalty);
+                            setActiveModalTab('settle');
+                          }}
+                          className="flex-1 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                        >
+                          <FaReceipt /> Settle All {detailData.pendingSchedules.length} Overdue Weeks
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          handleCloseModal();
+                          navigate('/foreclosure');
+                        }}
+                        className="py-3 px-4 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                      >
+                        <FaHandHoldingUsd /> Full Foreclosure
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* SETTLE DUES FORM VIEW */
+                  <>
                 {/* Pending Schedules Selection List */}
                 <div>
                   <div className="flex justify-between items-center mb-2">
@@ -633,6 +776,8 @@ export default function PendingSettlement() {
                     )}
                   </button>
                 </div>
+                </>
+                )}
               </div>
             ) : null}
           </div>

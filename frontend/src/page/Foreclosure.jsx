@@ -2,14 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { 
   FaHandHoldingUsd, FaSearch, FaCheckCircle, FaExclamationCircle, 
   FaCalendarCheck, FaPercentage, FaMoneyBillWave, FaArrowRight, 
-  FaUserCheck, FaInfoCircle, FaTimes, FaShieldAlt, FaPhoneAlt
+  FaUserCheck, FaInfoCircle, FaTimes, FaShieldAlt, FaPhoneAlt, FaHistory, FaReceipt
 } from 'react-icons/fa';
 import API_URL, { LOAN_APP_URL } from '../apiConfig';
 
 export default function Foreclosure() {
   const staffId = localStorage.getItem('staffId');
-  const [centers, setCenters] = useState([]);
-  const [selectedCenter, setSelectedCenter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -18,6 +16,7 @@ export default function Foreclosure() {
   const [selectedLoan, setSelectedLoan] = useState(null);
   const [loanDetails, setLoanDetails] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [activeModalTab, setActiveModalTab] = useState('foreclose'); // 'foreclose' | 'history'
 
   // Settlement Form State
   const [discountAmount, setDiscountAmount] = useState(0);
@@ -29,27 +28,13 @@ export default function Foreclosure() {
   const [notification, setNotification] = useState(null);
 
   useEffect(() => {
-    fetchCenters();
     fetchLoans();
   }, []);
 
-  const fetchCenters = async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/centers?staffId=${staffId || ''}`);
-      if (res.ok) {
-        const data = await res.json();
-        setCenters(data);
-      }
-    } catch (err) {
-      console.error('Error fetching centers:', err);
-    }
-  };
-
-  const fetchLoans = async (centerId = selectedCenter, search = searchTerm) => {
+  const fetchLoans = async (search = searchTerm) => {
     setLoading(true);
     try {
       let url = `${API_URL}/api/foreclosure/loans?staffId=${staffId || ''}`;
-      if (centerId) url += `&centerId=${centerId}`;
       if (search) url += `&search=${encodeURIComponent(search)}`;
       
       const res = await fetch(url);
@@ -64,14 +49,9 @@ export default function Foreclosure() {
     }
   };
 
-  const handleCenterChange = (centerId) => {
-    setSelectedCenter(centerId);
-    fetchLoans(centerId, searchTerm);
-  };
-
   const handleSearchChange = (val) => {
     setSearchTerm(val);
-    fetchLoans(selectedCenter, val);
+    fetchLoans(val);
   };
 
   const handleSelectLoan = async (loan) => {
@@ -79,6 +59,7 @@ export default function Foreclosure() {
     setDiscountAmount(0);
     setPaymentMode('Cash');
     setRemarks('');
+    setActiveModalTab('foreclose');
     setDetailsLoading(true);
 
     try {
@@ -135,7 +116,7 @@ export default function Foreclosure() {
       if (res.ok && data.success) {
         const closedLoan = data.closedLoan;
         handleCloseModal();
-        fetchLoans(selectedCenter, searchTerm);
+        fetchLoans(searchTerm);
 
         setNotification({
           type: 'success',
@@ -175,38 +156,29 @@ export default function Foreclosure() {
         </div>
       </div>
 
-      {/* Filter and Search Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mb-8">
-        <div className="md:col-span-5 bg-white/5 border border-white/10 p-4 rounded-3xl backdrop-blur-xl">
-          <label className="block text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 ml-1">
-            Filter by Active Center
-          </label>
-          <select
-            value={selectedCenter}
-            onChange={(e) => handleCenterChange(e.target.value)}
-            className="w-full bg-slate-900 border border-white/10 text-white rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all cursor-pointer"
-          >
-            <option value="">-- All Active Centers --</option>
-            {centers.map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="md:col-span-7 bg-white/5 border border-white/10 p-4 rounded-3xl backdrop-blur-xl">
-          <label className="block text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 ml-1">
-            Search Member / Loan
-          </label>
-          <div className="relative">
-            <FaSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input
-              type="text"
-              placeholder="Search by Member ID, Member No (e.g. LN-...), Name, Loan ID..."
-              value={searchTerm}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              className="w-full bg-slate-900 border border-white/10 text-white rounded-2xl pl-11 pr-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-slate-600"
-            />
-          </div>
+      {/* Hero Member Search Bar */}
+      <div className="bg-white/5 border border-white/10 p-5 rounded-3xl backdrop-blur-xl mb-8">
+        <label className="block text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 ml-1">
+          Search Member by ID, Member No, Name or Loan ID
+        </label>
+        <div className="relative">
+          <FaSearch className="absolute left-5 top-1/2 -translate-y-1/2 text-blue-400 text-lg" />
+          <input
+            type="text"
+            placeholder="Type Member ID (e.g. 133), Member No (e.g. LN-370408), Name, Loan ID..."
+            value={searchTerm}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            className="w-full bg-slate-900/90 border border-blue-500/30 text-white rounded-2xl pl-14 pr-12 py-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-slate-500"
+          />
+          {searchTerm && (
+            <button
+              onClick={() => handleSearchChange('')}
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-2"
+              title="Clear search"
+            >
+              <FaTimes />
+            </button>
+          )}
         </div>
       </div>
 
@@ -327,12 +299,142 @@ export default function Foreclosure() {
               </div>
             </div>
 
+            {/* Modal Navigation Tabs */}
+            <div className="flex border-b border-white/10 mb-5 gap-2">
+              <button
+                onClick={() => setActiveModalTab('foreclose')}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
+                  activeModalTab === 'foreclose'
+                    ? 'border-blue-500 text-blue-400 bg-blue-500/5'
+                    : 'border-transparent text-slate-400 hover:text-white'
+                }`}
+              >
+                <FaShieldAlt size={12} />
+                Foreclosure Settlement
+              </button>
+              <button
+                onClick={() => setActiveModalTab('history')}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
+                  activeModalTab === 'history'
+                    ? 'border-blue-500 text-blue-400 bg-blue-500/5'
+                    : 'border-transparent text-slate-400 hover:text-white'
+                }`}
+              >
+                <FaHistory size={12} />
+                Collection History ({loanDetails?.schedules?.length || 0} Weeks)
+              </button>
+            </div>
+
             {detailsLoading ? (
               <div className="py-20 flex justify-center">
                 <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-blue-500"></div>
               </div>
             ) : loanDetails ? (
               <div className="flex-1 overflow-y-auto pr-1 space-y-6">
+                {activeModalTab === 'history' ? (
+                  /* FULL COLLECTION HISTORY VIEW */
+                  <div className="space-y-4">
+                    {/* Summary Counters */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div className="bg-slate-900/80 border border-white/5 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-slate-500">Total Weeks</p>
+                        <p className="text-base font-black text-white">{loanDetails.summary.totalWeeks}</p>
+                      </div>
+                      <div className="bg-emerald-500/5 border border-emerald-500/10 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-emerald-400">Paid Weeks</p>
+                        <p className="text-base font-black text-emerald-400">{loanDetails.summary.paidWeeks}</p>
+                      </div>
+                      <div className="bg-amber-500/5 border border-amber-500/10 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-amber-400">Total Collected</p>
+                        <p className="text-base font-black text-white font-mono">
+                          ₹{loanDetails.summary.totalCollected.toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="bg-blue-500/5 border border-blue-500/10 p-3 rounded-2xl text-center">
+                        <p className="text-[9px] uppercase font-bold text-blue-400">Payoff Amount</p>
+                        <p className="text-base font-black text-blue-400 font-mono">
+                          ₹{grossAmount.toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Timeline List */}
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">
+                        Complete Repayment Timeline:
+                      </p>
+                      <div className="space-y-2 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
+                        {(loanDetails.schedules || []).map(sch => {
+                          const isPaid = ['Paid', 'Received', 'Verified'].includes(sch.status);
+                          return (
+                            <div
+                              key={sch.id}
+                              className={`p-3 rounded-2xl border transition-all flex items-center justify-between ${
+                                isPaid
+                                  ? 'bg-emerald-500/[0.04] border-emerald-500/10'
+                                  : 'bg-amber-500/[0.04] border-amber-500/20'
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className={`w-9 h-9 rounded-xl flex items-center justify-center font-mono font-black text-xs ${
+                                    isPaid
+                                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                      : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                  }`}
+                                >
+                                  W{sch.week_number}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <p className="text-xs font-bold text-white">Date: {sch.scheduled_date}</p>
+                                    <span
+                                      className={`px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider ${
+                                        isPaid
+                                          ? 'bg-emerald-500/20 text-emerald-400'
+                                          : 'bg-amber-500/20 text-amber-400'
+                                      }`}
+                                    >
+                                      {isPaid ? 'Paid' : 'Unpaid'}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-slate-400 mt-0.5">
+                                    Amount: ₹{Number(sch.amount).toLocaleString()}
+                                    {Number(sch.collected || 0) > 0 && (
+                                      <span className="text-emerald-400 font-bold ml-1.5">
+                                        • Collected: ₹{Number(sch.collected).toLocaleString()}
+                                      </span>
+                                    )}
+                                    {sch.penalty > 0 && (
+                                      <span className="text-yellow-400 font-bold ml-1.5">
+                                        • Late Fee: +₹{sch.penalty}
+                                      </span>
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <span className="font-mono text-xs font-bold text-slate-300">
+                                {isPaid ? '₹' + Number(sch.collected || sch.amount).toLocaleString() : 'Due ₹' + Number(sch.due || sch.amount).toLocaleString()}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-white/5">
+                      <button
+                        onClick={() => setActiveModalTab('foreclose')}
+                        className="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"
+                      >
+                        <FaShieldAlt /> Proceed to Foreclose Loan (₹{grossAmount.toLocaleString()})
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* FORECLOSURE CALCULATION VIEW */
+                  <>
                 {/* Repayment Progress Visual */}
                 <div className="bg-slate-900/80 rounded-2xl p-4 border border-white/5">
                   <div className="flex justify-between items-center text-xs font-bold mb-2">
@@ -486,6 +588,8 @@ export default function Foreclosure() {
                     )}
                   </button>
                 </div>
+                </>
+                )}
               </div>
             ) : null}
           </div>
