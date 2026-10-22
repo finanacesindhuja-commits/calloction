@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   FaCoins, FaSearch, FaCheckCircle, FaExclamationCircle, 
@@ -36,11 +36,8 @@ export default function PendingSettlement() {
   // Debounce timer ref
   const debounceRef = useRef(null);
 
-  useEffect(() => {
-    fetchPendingMembers('');
-  }, []);
-
-  const fetchPendingMembers = useCallback(async (search) => {
+  // ─── Core fetch function (no hooks dependency issues) ───────────────────────
+  const doFetch = async (search) => {
     // Cancel any previous in-flight request
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
@@ -48,13 +45,10 @@ export default function PendingSettlement() {
 
     setLoading(true);
     try {
-      // When searching, skip staffId filtering entirely so all members are reachable
-      let url;
-      if (search && search.trim()) {
-        url = `${API_URL}/api/pending-settlement/members?search=${encodeURIComponent(search.trim())}`;
-      } else {
-        url = `${API_URL}/api/pending-settlement/members?staffId=`;
-      }
+      // When a search term exists → bypass staffId and search all 154+ members
+      const url = (search && search.trim())
+        ? `${API_URL}/api/pending-settlement/members?search=${encodeURIComponent(search.trim())}`
+        : `${API_URL}/api/pending-settlement/members?staffId=`;
 
       const res = await fetch(url, { signal });
       if (res.ok) {
@@ -67,16 +61,23 @@ export default function PendingSettlement() {
     } finally {
       setLoading(false);
     }
-  }, [staffId]);
+  };
+
+  useEffect(() => {
+    doFetch('');
+  }, []);
 
   const handleSearchChange = (val) => {
     setSearchTerm(val);
-    // Debounce: wait 350ms after last keystroke before firing request
+    // Debounce: wait 400ms after last keystroke — prevents race conditions
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      fetchPendingMembers(val);
-    }, 350);
+      doFetch(val);
+    }, 400);
   };
+
+  // Keep old name working for post-payment refresh
+  const fetchPendingMembers = (search) => doFetch(search ?? searchTerm);
 
   const handleOpenSettlement = async (loanId) => {
     setSelectedLoanId(loanId);
