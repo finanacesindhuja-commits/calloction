@@ -1508,7 +1508,7 @@ app.get('/api/pending-settlement/loan/:loanId', async (req, res) => {
 // 3. Process Pending Arrears Settlement (Waterfall Allocation)
 app.post('/api/pending-settlement/pay', async (req, res) => {
   try {
-    const { loanId, amountPaid, waivePenalty, selectedScheduleIds, paymentMode, remarks } = req.body;
+    const { loanId, amountPaid, waivePenalty, waiverPercentage, selectedScheduleIds, paymentMode, remarks } = req.body;
     const today = getTodayIST();
     const paidAmount = Number(amountPaid) || 0;
 
@@ -1550,13 +1550,21 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
     const settledWeeks = [];
     let waivedPenaltyTotal = 0;
 
+    // Calculate effective percentage waiver (0% to 100%)
+    let pct = 0;
+    if (waiverPercentage !== undefined && waiverPercentage !== null && waiverPercentage !== '') {
+      pct = Math.min(100, Math.max(0, Number(waiverPercentage) || 0));
+    } else if (waivePenalty) {
+      pct = 100;
+    }
+
     for (const sch of schedulesToProcess) {
       if (remainingCash <= 0) break;
 
-      const penalty = waivePenalty ? 0 : getPenalty(sch.scheduled_date, sch.status);
-      if (waivePenalty) {
-        waivedPenaltyTotal += getPenalty(sch.scheduled_date, sch.status);
-      }
+      const fullPenalty = getPenalty(sch.scheduled_date, sch.status);
+      const waivedPortion = Math.round((fullPenalty * pct) / 100);
+      const penalty = Math.max(0, fullPenalty - waivedPortion);
+      waivedPenaltyTotal += waivedPortion;
 
       const targetForThisSchedule = Number(sch.amount) + penalty;
       const alreadyCollected = Number(sch.collected_amount) || 0;

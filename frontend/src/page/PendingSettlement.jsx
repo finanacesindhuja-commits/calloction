@@ -23,7 +23,8 @@ export default function PendingSettlement() {
   // Settlement Form State
   const [selectedScheduleIds, setSelectedScheduleIds] = useState([]);
   const [amountPaid, setAmountPaid] = useState('');
-  const [waivePenalty, setWaivePenalty] = useState(false);
+  const [waiverPercentage, setWaiverPercentage] = useState(0);
+  const [customWaiverInput, setCustomWaiverInput] = useState('');
   const [paymentMode, setPaymentMode] = useState('Cash');
   const [remarks, setRemarks] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -38,6 +39,12 @@ export default function PendingSettlement() {
 
   // ─── Core fetch function (no hooks dependency issues) ───────────────────────
   const doFetch = async (search) => {
+    if (!search || !search.trim()) {
+      setPendingMembers([]);
+      setLoading(false);
+      return;
+    }
+
     // Cancel any previous in-flight request
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
@@ -45,11 +52,7 @@ export default function PendingSettlement() {
 
     setLoading(true);
     try {
-      // When a search term exists → bypass staffId and search all 154+ members
-      const url = (search && search.trim())
-        ? `${API_URL}/api/pending-settlement/members?search=${encodeURIComponent(search.trim())}`
-        : `${API_URL}/api/pending-settlement/members?staffId=`;
-
+      const url = `${API_URL}/api/pending-settlement/members?search=${encodeURIComponent(search.trim())}`;
       const res = await fetch(url, { signal });
       if (res.ok) {
         const data = await res.json();
@@ -63,26 +66,38 @@ export default function PendingSettlement() {
     }
   };
 
+  // Full member list hidden by default — only fetched when user types in search
   useEffect(() => {
-    doFetch('');
+    // Initial load: keep empty
   }, []);
 
   const handleSearchChange = (val) => {
     setSearchTerm(val);
-    // Debounce: wait 400ms after last keystroke — prevents race conditions
+    if (!val || !val.trim()) {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (abortRef.current) abortRef.current.abort();
+      setPendingMembers([]);
+      setLoading(false);
+      return;
+    }
+    // Debounce: wait 350ms after last keystroke — prevents race conditions
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      doFetch(val);
-    }, 400);
+      doFetch(val.trim());
+    }, 350);
   };
 
   // Keep old name working for post-payment refresh
-  const fetchPendingMembers = (search) => doFetch(search ?? searchTerm);
+  const fetchPendingMembers = (search) => {
+    if (search && search.trim()) doFetch(search.trim());
+    else if (searchTerm && searchTerm.trim()) doFetch(searchTerm.trim());
+  };
 
   const handleOpenSettlement = async (loanId) => {
     setSelectedLoanId(loanId);
     setDetailsLoading(true);
-    setWaivePenalty(false);
+    setWaiverPercentage(0);
+    setCustomWaiverInput('');
     setPaymentMode('Cash');
     setRemarks('');
 
@@ -116,7 +131,8 @@ export default function PendingSettlement() {
     setDetailData(null);
     setSelectedScheduleIds([]);
     setAmountPaid('');
-    setWaivePenalty(false);
+    setWaiverPercentage(0);
+    setCustomWaiverInput('');
   };
 
   // Toggle specific schedule selection
@@ -130,51 +146,78 @@ export default function PendingSettlement() {
     setSelectedScheduleIds(updated);
 
     // Re-calculate target total for selected
-    recalculateTarget(updated, waivePenalty);
+    recalculateTarget(updated, waiverPercentage);
   };
 
-  // Toggle Penalty Waiver
-  const handleToggleWaive = (checked) => {
-    setWaivePenalty(checked);
-    recalculateTarget(selectedScheduleIds, checked);
+  // Percentage Waiver Change Handlers
+  const handleWaiverChange = (pct) => {
+    const num = Math.min(100, Math.max(0, Number(pct) || 0));
+    setWaiverPercentage(num);
+    setCustomWaiverInput(num === 0 ? '' : String(num));
+    recalculateTarget(selectedScheduleIds, num);
   };
 
-  const recalculateTarget = (scheduleIds, isWaived) => {
+  const handleCustomWaiverChange = (val) => {
+    setCustomWaiverInput(val);
+    const num = val === '' ? 0 : Math.min(100, Math.max(0, Number(val) || 0));
+    setWaiverPercentage(num);
+    recalculateTarget(selectedScheduleIds, num);
+  };
+
+  const recalculateTarget = (scheduleIds, pct = waiverPercentage) => {
     if (!detailData) return;
+    const numPct = Math.min(100, Math.max(0, Number(pct) || 0));
     const selectedSchedules = (detailData.pendingSchedules || []).filter(s => scheduleIds.includes(s.id));
     let total = 0;
     selectedSchedules.forEach(s => {
-      const penalty = isWaived ? 0 : (s.penalty || 0);
-      total += (s.remEMI || 0) + penalty;
+      const fullP = s.penalty || 0;
+      const waivedP = Math.round((fullP * numPct) / 100);
+      const netP = Math.max(0, fullP - waivedP);
+      total += (s.remEMI || 0) + netP;
     });
     setAmountPaid(total > 0 ? String(total) : '');
   };
 
-  // Calculate selected total due
+  // Calculate selected total due with percentage breakdown
   const calculateSelectedTotal = () => {
-    if (!detailData) return 0;
+    if (!detailData) return { emiTotal: 0, penaltyTotal: 0, waivedPenalty: 0, netPenalty: 0, grandTotal: 0 };
+    const numPct = Math.min(100, Math.max(0, Number(waiverPercentage) || 0));
     const selected = (detailData.pendingSchedules || []).filter(s => selectedScheduleIds.includes(s.id));
-    let total = 0;
+    let emiTotal = 0;
+    let penaltyTotal = 0;
     selected.forEach(s => {
-      const p = waivePenalty ? 0 : (s.penalty || 0);
-      total += (s.remEMI || 0) + p;
+      emiTotal += (s.remEMI || 0);
+      penaltyTotal += (s.penalty || 0);
     });
-    return total;
+    const waivedPenalty = Math.round((penaltyTotal * numPct) / 100);
+    const netPenalty = Math.max(0, penaltyTotal - waivedPenalty);
+    return {
+      emiTotal,
+      penaltyTotal,
+      waivedPenalty,
+      netPenalty,
+      grandTotal: emiTotal + netPenalty
+    };
   };
 
-  const targetTotal = calculateSelectedTotal();
+  const totals = calculateSelectedTotal();
+  const targetTotal = totals.grandTotal;
+  const waiverPct = Math.min(100, Math.max(0, Number(waiverPercentage) || 0));
   const enteredNum = Number(amountPaid) || 0;
 
   // Waterfall Allocation Preview for UI
   const getAllocationPreview = () => {
     if (!detailData || enteredNum <= 0) return [];
+    const numPct = Math.min(100, Math.max(0, Number(waiverPercentage) || 0));
     const selected = (detailData.pendingSchedules || []).filter(s => selectedScheduleIds.includes(s.id));
     let remaining = enteredNum;
     const result = [];
 
     for (const s of selected) {
-      const penalty = waivePenalty ? 0 : (s.penalty || 0);
-      const target = (s.remEMI || 0) + penalty;
+      const fullP = s.penalty || 0;
+      const waivedP = Math.round((fullP * numPct) / 100);
+      const netP = Math.max(0, fullP - waivedP);
+      const target = (s.remEMI || 0) + netP;
       const apply = Math.min(remaining, target);
       remaining -= apply;
 
@@ -204,13 +247,15 @@ export default function PendingSettlement() {
 
     setIsSubmitting(true);
     try {
+      const numPct = Math.min(100, Math.max(0, Number(waiverPercentage) || 0));
       const res = await fetch(`${API_URL}/api/pending-settlement/pay`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           loanId: selectedLoanId,
           amountPaid: enteredNum,
-          waivePenalty,
+          waivePenalty: numPct === 100,
+          waiverPercentage: numPct,
           selectedScheduleIds,
           paymentMode,
           remarks
@@ -397,14 +442,27 @@ export default function PendingSettlement() {
             </div>
           ))}
         </div>
+      ) : !searchTerm.trim() ? (
+        <div className="bg-slate-900/40 border border-dashed border-white/10 rounded-3xl p-16 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto mb-4 text-2xl shadow-lg">
+            <FaSearch />
+          </div>
+          <h3 className="text-xl font-bold text-white mb-2">Search Member to Settle Arrears</h3>
+          <p className="text-xs text-slate-400 max-w-md mx-auto mb-4">
+            Type Member ID, Member No (e.g. LN-973153), Name or Loan ID in the search box above to view details, collection history, and settle dues.
+          </p>
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-slate-400">
+            <span>💡 Try:</span> Type <span className="font-mono text-amber-400 font-bold">LN-973153</span>, <span className="font-mono text-amber-400 font-bold">LN-370408</span> or member name
+          </div>
+        </div>
       ) : (
         <div className="bg-slate-900/50 border border-dashed border-white/10 rounded-3xl p-16 text-center">
           <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mx-auto mb-4 text-3xl">
-            ✨
+            🔍
           </div>
-          <h3 className="text-lg font-bold text-white mb-1">No Pending Arrears Found!</h3>
-          <p className="text-xs text-slate-500 max-w-sm mx-auto">
-            All collections are up-to-date for the selected filter criteria.
+          <h3 className="text-lg font-bold text-white mb-1">No Member Found!</h3>
+          <p className="text-xs text-slate-400 max-w-sm mx-auto">
+            No member found matching "<span className="text-amber-400 font-mono font-bold">{searchTerm}</span>". Please check the Member ID or LN number.
           </p>
         </div>
       )}
@@ -635,7 +693,7 @@ export default function PendingSettlement() {
                           setAmountPaid('0');
                         } else {
                           setSelectedScheduleIds(allIds);
-                          recalculateTarget(allIds, waivePenalty);
+                          recalculateTarget(allIds, waiverPercentage);
                         }
                       }}
                       className="text-[10px] font-bold text-amber-400 hover:underline uppercase"
@@ -647,8 +705,10 @@ export default function PendingSettlement() {
                   <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                     {detailData.pendingSchedules.map(sch => {
                       const isChecked = selectedScheduleIds.includes(sch.id);
-                      const penalty = waivePenalty ? 0 : (sch.penalty || 0);
-                      const weekTotal = sch.remEMI + penalty;
+                      const fullP = sch.penalty || 0;
+                      const waivedP = Math.round((fullP * waiverPct) / 100);
+                      const netP = Math.max(0, fullP - waivedP);
+                      const weekTotal = sch.remEMI + netP;
 
                       return (
                         <div
@@ -668,9 +728,13 @@ export default function PendingSettlement() {
                               <p className="text-xs font-bold">
                                 Week {sch.week_number} <span className="text-[10px] text-slate-400 font-normal">({sch.scheduled_date})</span>
                               </p>
-                              {sch.penalty > 0 && !waivePenalty && (
+                              {fullP > 0 && (
                                 <p className="text-[10px] text-yellow-400 font-bold">
-                                  Includes +₹{sch.penalty} Late Fee
+                                  {waiverPct > 0 ? (
+                                    <>Late Fee: <span className="line-through text-slate-500">₹{fullP}</span> → ₹{netP} <span className="text-emerald-400 font-normal">({waiverPct}% waived)</span></>
+                                  ) : (
+                                    <>Includes +₹{fullP} Late Fee</>
+                                  )}
                                 </p>
                               )}
                             </div>
@@ -687,25 +751,77 @@ export default function PendingSettlement() {
                   </div>
                 </div>
 
-                {/* Penalty Waiver Option */}
-                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-2xl p-4 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-bold text-yellow-300">
-                      Waive Off Late Penalties
-                    </p>
-                    <p className="text-[10px] text-slate-400">
-                      Zero out late fees so member only pays pure EMI dues
-                    </p>
+                {/* Penalty Waiver Percentage Control */}
+                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-yellow-500/20 text-yellow-400 flex items-center justify-center text-sm font-black shrink-0">
+                        <FaPercentage />
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-yellow-300 uppercase tracking-wider">
+                          Late Penalty Waiver Concession
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          Enter percentage to discount or waive off late penalties
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-black/40 px-3 py-1 rounded-xl border border-yellow-500/30">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase">Waiver:</span>
+                      <span className="font-mono font-black text-xs text-yellow-400">{waiverPct}%</span>
+                    </div>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={waivePenalty}
-                      onChange={(e) => handleToggleWaive(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
-                  </label>
+
+                  {/* Percentage Presets + Custom Input */}
+                  <div className="grid grid-cols-6 gap-2 items-center">
+                    {[0, 25, 50, 75, 100].map(pct => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => handleWaiverChange(pct)}
+                        className={`py-2 px-1 rounded-xl text-xs font-black transition-all ${
+                          waiverPct === pct
+                            ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30 ring-2 ring-amber-400'
+                            : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
+                        }`}
+                      >
+                        {pct === 0 ? '0%' : pct === 100 ? '100%' : `${pct}%`}
+                      </button>
+                    ))}
+
+                    {/* Custom Percentage Input */}
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        placeholder="Custom"
+                        value={customWaiverInput}
+                        onChange={(e) => handleCustomWaiverChange(e.target.value)}
+                        className="w-full bg-slate-900/90 border border-yellow-500/30 rounded-xl py-2 pl-2 pr-5 text-center text-xs font-mono font-black text-white focus:border-yellow-400 outline-none"
+                      />
+                      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-500 pointer-events-none font-bold">%</span>
+                    </div>
+                  </div>
+
+                  {/* Dynamic Calculation Breakdown */}
+                  {totals.penaltyTotal > 0 && (
+                    <div className="bg-black/30 rounded-xl p-2.5 border border-white/5 grid grid-cols-3 gap-2 text-center text-xs">
+                      <div>
+                        <p className="text-[10px] text-slate-400 font-medium">Original Late Fee</p>
+                        <p className="font-mono font-bold text-slate-300 mt-0.5">₹{totals.penaltyTotal.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-emerald-400 font-medium">Waived ({waiverPct}%)</p>
+                        <p className="font-mono font-bold text-emerald-400 mt-0.5">-₹{totals.waivedPenalty.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-yellow-400 font-medium">Net Late Fee Due</p>
+                        <p className="font-mono font-bold text-white mt-0.5">₹{totals.netPenalty.toLocaleString()}</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Amount Paid Input & Target */}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   FaHandHoldingUsd, FaSearch, FaCheckCircle, FaExclamationCircle, 
   FaCalendarCheck, FaPercentage, FaMoneyBillWave, FaArrowRight, 
@@ -27,22 +27,34 @@ export default function Foreclosure() {
   // Notification state
   const [notification, setNotification] = useState(null);
 
+  const debounceRef = useRef(null);
+  const abortRef = useRef(null);
+
+  // Full loans hidden by default — only fetched when user types search
   useEffect(() => {
-    fetchLoans();
+    // Keep empty on initial load
   }, []);
 
-  const fetchLoans = async (search = searchTerm) => {
+  const fetchLoans = async (search) => {
+    if (!search || !search.trim()) {
+      setLoans([]);
+      setLoading(false);
+      return;
+    }
+
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+
     setLoading(true);
     try {
-      let url = `${API_URL}/api/foreclosure/loans?staffId=${staffId || ''}`;
-      if (search) url += `&search=${encodeURIComponent(search)}`;
-      
-      const res = await fetch(url);
+      const url = `${API_URL}/api/foreclosure/loans?search=${encodeURIComponent(search.trim())}`;
+      const res = await fetch(url, { signal: abortRef.current.signal });
       if (res.ok) {
         const data = await res.json();
-        setLoans(data);
+        setLoans(Array.isArray(data) ? data : []);
       }
     } catch (err) {
+      if (err.name === 'AbortError') return;
       console.error('Error fetching loans:', err);
     } finally {
       setLoading(false);
@@ -51,7 +63,17 @@ export default function Foreclosure() {
 
   const handleSearchChange = (val) => {
     setSearchTerm(val);
-    fetchLoans(val);
+    if (!val || !val.trim()) {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (abortRef.current) abortRef.current.abort();
+      setLoans([]);
+      setLoading(false);
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchLoans(val.trim());
+    }, 350);
   };
 
   const handleSelectLoan = async (loan) => {
@@ -251,14 +273,27 @@ export default function Foreclosure() {
             </div>
           ))}
         </div>
+      ) : !searchTerm.trim() ? (
+        <div className="bg-slate-900/40 border border-dashed border-white/10 rounded-3xl p-16 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center mx-auto mb-4 text-2xl shadow-lg">
+            <FaSearch />
+          </div>
+          <h3 className="text-xl font-bold text-white mb-2">Search Member to Foreclose Loan</h3>
+          <p className="text-xs text-slate-400 max-w-md mx-auto mb-4">
+            Type Member ID, Member No (e.g. LN-973153), Name or Loan ID above to view principal outstanding, collection history, and close loan.
+          </p>
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-slate-400">
+            <span>💡 Try:</span> Type <span className="font-mono text-blue-400 font-bold">LN-973153</span>, <span className="font-mono text-blue-400 font-bold">LN-370408</span> or member name
+          </div>
+        </div>
       ) : (
         <div className="bg-slate-900/50 border border-dashed border-white/10 rounded-3xl p-16 text-center">
           <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mx-auto mb-4 text-3xl">
-            📋
+            🔍
           </div>
-          <h3 className="text-lg font-bold text-white mb-1">No Active Loans Found</h3>
-          <p className="text-xs text-slate-500 max-w-sm mx-auto">
-            Try choosing a different center or clearing your search term to find members for foreclosure.
+          <h3 className="text-lg font-bold text-white mb-1">No Loan Found!</h3>
+          <p className="text-xs text-slate-400 max-w-sm mx-auto">
+            No active loan found matching "<span className="text-blue-400 font-mono font-bold">{searchTerm}</span>". Please check the Member ID or LN number.
           </p>
         </div>
       )}
@@ -519,6 +554,31 @@ export default function Foreclosure() {
                         className="w-full bg-slate-900 border border-white/10 text-white rounded-xl py-2 pl-7 pr-3 text-sm font-mono font-bold focus:border-blue-500 outline-none"
                       />
                     </div>
+                  </div>
+
+                  {/* Quick Concession Preset Buttons */}
+                  <div className="flex gap-1.5 flex-wrap pt-1">
+                    <span className="text-[10px] text-slate-400 font-bold self-center mr-1">Quick Rebate:</span>
+                    {[
+                      { label: '0%', val: 0 },
+                      { label: '10%', val: Math.round(grossAmount * 0.10) },
+                      { label: '25%', val: Math.round(grossAmount * 0.25) },
+                      { label: '50%', val: Math.round(grossAmount * 0.50) },
+                      ...(loanDetails.summary.totalPenalty > 0 ? [{ label: '100% Late Fee', val: loanDetails.summary.totalPenalty }] : [])
+                    ].map(p => (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() => setDiscountAmount(p.val)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                          Number(discountAmount) === p.val
+                            ? 'bg-blue-500 text-white border-blue-400 shadow-sm'
+                            : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
                   </div>
 
                   {/* Big Settlement Amount */}
