@@ -260,7 +260,7 @@ export default function Collections() {
           const closedNames = data.closedLoans.map(l => l.member_name).join(', ');
           setNotification({
             type: 'closed',
-            message: `🎉 ${closedNames} — Loan முழுமையாக அடைக்கப்பட்டது! Loan Status: CLOSED`,
+            message: `🎉 ${closedNames} — Loan fully settled! Loan Status: CLOSED`,
             action: () => {
               window.dispatchEvent(new Event('collectionSubmitted'));
               setStep(1);

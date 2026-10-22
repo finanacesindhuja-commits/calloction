@@ -167,7 +167,7 @@ export default function Foreclosure() {
             <FaHandHoldingUsd /> Loan Foreclosure Portal
           </div>
           <h1 className="text-3xl md:text-4xl font-black text-white tracking-tight">
-            முன்கூட்டியே கடன் முடித்தல்
+            Early Loan Foreclosure
           </h1>
           <p className="text-slate-400 font-medium text-xs mt-1">
             Complete active loan settlement ahead of time with instant loan closure & NOC
@@ -201,7 +201,7 @@ export default function Foreclosure() {
             <FaSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
-              placeholder="Search by Member Name, Member No, Mobile, Loan ID..."
+              placeholder="Search by Member ID, Member No (e.g. LN-...), Name, Loan ID..."
               value={searchTerm}
               onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full bg-slate-900 border border-white/10 text-white rounded-2xl pl-11 pr-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-slate-600"
@@ -239,14 +239,19 @@ export default function Foreclosure() {
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                      <span className="px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-mono font-black">
+                        ID: #{loan.member_id || loan.members?.id || 'N/A'}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-white/5 text-slate-300 text-[10px] font-mono font-semibold">
+                        {loan.members?.member_no || 'N/A'}
+                      </span>
+                    </div>
                     <h3 className="font-bold text-white text-base truncate group-hover:text-blue-400 transition-colors uppercase">
                       {loan.member_name}
                     </h3>
                     <p className="text-[11px] text-slate-400 font-mono">
-                      No: {loan.members?.member_no || 'N/A'} • Loan #{loan.id}
-                    </p>
-                    <p className="text-[10px] text-blue-300 font-bold uppercase tracking-wider truncate mt-0.5">
-                      {loan.centers?.name || 'Center N/A'}
+                      Loan #{loan.id} • <span className="text-blue-300 font-bold uppercase">{loan.centers?.name || 'Center N/A'}</span>
                     </p>
                   </div>
                 </div>
@@ -306,9 +311,20 @@ export default function Foreclosure() {
               <h2 className="text-2xl font-black text-white tracking-tight">
                 Foreclosure: {selectedLoan.member_name}
               </h2>
-              <p className="text-xs text-slate-400">
-                Center: {selectedLoan.centers?.name} • Member No: {selectedLoan.members?.member_no || 'N/A'} • Loan #{selectedLoan.id}
-              </p>
+              <div className="flex items-center gap-2 flex-wrap text-xs text-slate-400 mt-1">
+                <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 font-mono font-bold text-[11px] border border-blue-500/20">
+                  Member ID: #{selectedLoan.member_id || selectedLoan.members?.id || 'N/A'}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-white/5 text-slate-300 font-mono text-[11px]">
+                  No: {selectedLoan.members?.member_no || 'N/A'}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-white/5 text-slate-300 font-mono text-[11px]">
+                  Loan #{selectedLoan.id}
+                </span>
+                <span className="text-blue-300 font-bold uppercase">
+                  • Center: {selectedLoan.centers?.name}
+                </span>
+              </div>
             </div>
 
             {detailsLoading ? (
@@ -387,7 +403,7 @@ export default function Foreclosure() {
                   {/* Special Discount / Waiver */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-white/5">
                     <div>
-                      <span className="text-xs font-bold text-slate-300 block">Interest Rebate / Discount (தள்ளுபடி):</span>
+                      <span className="text-xs font-bold text-slate-300 block">Interest Rebate / Discount:</span>
                       <span className="text-[10px] text-slate-500">Waive off interest for early bulk closure</span>
                     </div>
                     <div className="relative w-36">
@@ -406,7 +422,7 @@ export default function Foreclosure() {
                   {/* Big Settlement Amount */}
                   <div className="pt-3 border-t border-white/10 flex justify-between items-baseline">
                     <span className="text-xs font-black uppercase tracking-wider text-blue-300">
-                      Net Settlement Payable (இறுதி தொகை):
+                      Net Settlement Payable:
                     </span>
                     <span className="text-3xl font-black text-white font-mono">
                       ₹{netSettlementPayable.toLocaleString()}
@@ -425,14 +441,14 @@ export default function Foreclosure() {
                       onChange={(e) => setPaymentMode(e.target.value)}
                       className="w-full bg-slate-900 border border-white/10 text-white rounded-xl px-3 py-2.5 text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
                     >
-                      <option value="Cash">Cash (ரொக்கம்)</option>
+                      <option value="Cash">Cash</option>
                       <option value="UPI">UPI / GPay / PhonePe</option>
                       <option value="Bank Transfer">Bank Transfer / NEFT</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
-                      Remarks / குறிப்பு (Optional)
+                      Remarks (Optional)
                     </label>
                     <input
                       type="text"
@@ -465,7 +481,7 @@ export default function Foreclosure() {
                       <span className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-slate-950"></span>
                     ) : (
                       <>
-                        <FaCheckCircle /> Confirm & Close Loan (முடிக்கவும்)
+                        <FaCheckCircle /> Confirm & Close Loan
                       </>
                     )}
                   </button>

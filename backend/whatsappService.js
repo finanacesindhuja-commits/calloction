@@ -186,19 +186,19 @@ class WhatsAppService {
   }) {
     const formattedDate = date || new Date().toISOString().split('T')[0];
     const lines = [
-      `🧾 *SINDHUJA FINANCE - வசூல் ரசீது*`,
+      `🧾 *SINDHUJA FINANCE - COLLECTION RECEIPT*`,
       `━━━━━━━━━━━━━━━━━━━━`,
-      `👤 *பெயர்:* ${memberName || 'Member'}`,
-      memberNo ? `🔢 *உறுப்பினர் எண்:* ${memberNo}` : null,
-      centerName ? `📍 *சென்டர்:* ${centerName}` : null,
-      `📅 *தேதி:* ${formattedDate}`,
-      week ? `📆 *தவணை வாரம்:* ${week}` : null,
-      `💵 *இன்று செலுத்தியது:* ₹${Number(amountPaid || 0).toLocaleString('en-IN')}`,
-      totalLoan ? `💳 *மொத்த கடன்:* ₹${Number(totalLoan).toLocaleString('en-IN')}` : null,
-      (remainingBalance !== undefined && remainingBalance !== null) ? `📊 *மீதமுள்ள பாக்கி:* ₹${Number(remainingBalance).toLocaleString('en-IN')}` : null,
+      `👤 *Name:* ${memberName || 'Member'}`,
+      memberNo ? `🔢 *Member No:* ${memberNo}` : null,
+      centerName ? `📍 *Center:* ${centerName}` : null,
+      `📅 *Date:* ${formattedDate}`,
+      week ? `📆 *EMI Week:* ${week}` : null,
+      `💵 *Amount Paid Today:* ₹${Number(amountPaid || 0).toLocaleString('en-IN')}`,
+      totalLoan ? `💳 *Total Loan:* ₹${Number(totalLoan).toLocaleString('en-IN')}` : null,
+      (remainingBalance !== undefined && remainingBalance !== null) ? `📊 *Remaining Balance:* ₹${Number(remainingBalance).toLocaleString('en-IN')}` : null,
       `━━━━━━━━━━━━━━━━━━━━`,
-      `✅ *தங்களின் வாரத்தவணை பெறப்பட்டது.*`,
-      `🙏 *நன்றி - சிந்துஜா பைனான்ஸ்!*`
+      `✅ *Your weekly EMI payment has been received.*`,
+      `🙏 *Thank you - Sindhuja Finance!*`
     ].filter(Boolean);
 
     return lines.join('\n');
@@ -215,20 +215,20 @@ class WhatsAppService {
   }) {
     const formattedDate = date || new Date().toLocaleDateString('en-GB');
     const lines = [
-      `🎉 *SINDHUJA FINANCE - கடன் முடித்தல் ரசீது (NOC)*`,
+      `🎉 *SINDHUJA FINANCE - LOAN CLOSURE RECEIPT (NOC)*`,
       `━━━━━━━━━━━━━━━━━━━━`,
-      `👤 *பெயர்:* ${memberName || 'Member'}`,
-      memberNo ? `🔢 *உறுப்பினர் எண்:* ${memberNo}` : null,
-      centerName ? `📍 *சென்டர்:* ${centerName}` : null,
-      `📅 *முடிவு தேதி:* ${formattedDate}`,
-      totalLoan ? `💳 *மொத்த கடன்:* ₹${Number(totalLoan).toLocaleString('en-IN')}` : null,
-      Number(discountAmount) > 0 ? `🎁 *தள்ளுபடி (Rebate):* ₹${Number(discountAmount).toLocaleString('en-IN')}` : null,
-      `💵 *செலுத்திய தீர்வு தொகை:* ₹${Number(settlementAmount || 0).toLocaleString('en-IN')}`,
-      `📊 *மீதமுள்ள பாக்கி:* ₹0 (முழுமையாக முடிந்தது)`,
+      `👤 *Name:* ${memberName || 'Member'}`,
+      memberNo ? `🔢 *Member No:* ${memberNo}` : null,
+      centerName ? `📍 *Center:* ${centerName}` : null,
+      `📅 *Closure Date:* ${formattedDate}`,
+      totalLoan ? `💳 *Total Loan:* ₹${Number(totalLoan).toLocaleString('en-IN')}` : null,
+      Number(discountAmount) > 0 ? `🎁 *Discount / Rebate:* ₹${Number(discountAmount).toLocaleString('en-IN')}` : null,
+      `💵 *Settlement Amount Paid:* ₹${Number(settlementAmount || 0).toLocaleString('en-IN')}`,
+      `📊 *Remaining Balance:* ₹0 (Fully Closed)`,
       `━━━━━━━━━━━━━━━━━━━━`,
-      `✅ *தங்களின் கடன் வெற்றிகரமாக முன்கூட்டியே முடிக்கப்பட்டது (LOAN CLOSED).*`,
-      `🌟 *தங்களின் அடுத்த புதிய கடனுக்கு உடனடியாக விண்ணப்பிக்கலாம்.*`,
-      `🙏 *நன்றி - சிந்துஜா பைனான்ஸ்!*`
+      `✅ *Your loan has been successfully foreclosed & closed (LOAN CLOSED).*`,
+      `🌟 *You are now eligible to apply for your next loan immediately.*`,
+      `🙏 *Thank you - Sindhuja Finance!*`
     ].filter(Boolean);
 
     return lines.join('\n');
@@ -246,19 +246,19 @@ class WhatsAppService {
   }) {
     const formattedDate = date || new Date().toLocaleDateString('en-GB');
     const lines = [
-      `🧾 *SINDHUJA FINANCE - நிலுவைத் தொகை ரசீது*`,
+      `🧾 *SINDHUJA FINANCE - ARREARS SETTLEMENT RECEIPT*`,
       `━━━━━━━━━━━━━━━━━━━━`,
-      `👤 *பெயர்:* ${memberName || 'Member'}`,
-      memberNo ? `🔢 *உறுப்பினர் எண்:* ${memberNo}` : null,
-      centerName ? `📍 *சென்டர்:* ${centerName}` : null,
-      `📅 *தேதி:* ${formattedDate}`,
-      settledWeeks && settledWeeks.length > 0 ? `📆 *முடிந்த வாரங்கள்:* ${settledWeeks.join(', ')}` : null,
-      `💵 *செலுத்திய மொத்த தொகை:* ₹${Number(amountPaid || 0).toLocaleString('en-IN')}`,
-      Number(waivedPenalty) > 0 ? `🎁 *தள்ளுபடி செய்த அபராதம்:* ₹${Number(waivedPenalty).toLocaleString('en-IN')}` : null,
-      (remainingBalance !== undefined && remainingBalance !== null) ? `📊 *மீதமுள்ள மொத்த பாக்கி:* ₹${Number(remainingBalance).toLocaleString('en-IN')}` : null,
+      `👤 *Name:* ${memberName || 'Member'}`,
+      memberNo ? `🔢 *Member No:* ${memberNo}` : null,
+      centerName ? `📍 *Center:* ${centerName}` : null,
+      `📅 *Date:* ${formattedDate}`,
+      settledWeeks && settledWeeks.length > 0 ? `📆 *Settled Weeks:* ${settledWeeks.join(', ')}` : null,
+      `💵 *Total Amount Paid:* ₹${Number(amountPaid || 0).toLocaleString('en-IN')}`,
+      Number(waivedPenalty) > 0 ? `🎁 *Waived Penalty:* ₹${Number(waivedPenalty).toLocaleString('en-IN')}` : null,
+      (remainingBalance !== undefined && remainingBalance !== null) ? `📊 *Total Remaining Balance:* ₹${Number(remainingBalance).toLocaleString('en-IN')}` : null,
       `━━━━━━━━━━━━━━━━━━━━`,
-      `✅ *தங்களின் நிலுவைத் தொகை வெற்றிகரமாக வரவு வைக்கப்பட்டது.*`,
-      `🙏 *நன்றி - சிந்துஜா பைனான்ஸ்!*`
+      `✅ *Your pending dues have been successfully settled & credited.*`,
+      `🙏 *Thank you - Sindhuja Finance!*`
     ].filter(Boolean);
 
     return lines.join('\n');

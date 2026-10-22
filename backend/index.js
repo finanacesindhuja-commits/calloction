@@ -163,15 +163,15 @@ app.get('/whatsapp', (req, res) => {
         <img id="qrImage" src="" alt="WhatsApp QR Code" class="w-64 h-64 mx-auto" />
       </div>
       <div class="bg-slate-800/60 rounded-2xl p-4 text-left border border-white/5 mb-4">
-        <p class="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2">இணைக்கும் முறை (Instructions):</p>
+        <p class="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2">Connection Instructions:</p>
         <ol class="text-xs text-slate-300 space-y-1.5 list-decimal list-inside leading-relaxed">
-          <li>உங்கள் போனில் <b>WhatsApp</b>-ஐ திறக்கவும்.</li>
-          <li><b>Menu (⋮)</b> அல்லது <b>Settings</b>-ல் <b>Linked Devices</b> செல்லவும்.</li>
-          <li><b>Link a Device</b> என்பதை கிளிக் செய்யவும்.</li>
-          <li>மேலே உள்ள <b>QR Code</b>-ஐ கேமராவில் ஸ்கேன் செய்யவும்.</li>
+          <li>Open <b>WhatsApp</b> on your mobile phone.</li>
+          <li>Go to <b>Menu (⋮)</b> or <b>Settings</b> and tap <b>Linked Devices</b>.</li>
+          <li>Tap <b>Link a Device</b>.</li>
+          <li>Scan the <b>QR Code</b> above using your camera.</li>
         </ol>
       </div>
-      <p class="text-[11px] text-slate-500 animate-pulse">ஸ்கேன் செய்தவுடன் இந்த பக்கம் தானாக மாறும்...</p>
+      <p class="text-[11px] text-slate-500 animate-pulse">This page will automatically update once scanned...</p>
     </div>
 
     <!-- Connected Section -->
@@ -179,16 +179,16 @@ app.get('/whatsapp', (req, res) => {
       <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-3 border border-emerald-500/30">
         <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
       </div>
-      <h3 class="text-lg font-bold text-white mb-1">WhatsApp இணைக்கப்பட்டது!</h3>
+      <h3 class="text-lg font-bold text-white mb-1">WhatsApp Connected Successfully!</h3>
       <p id="connectedUser" class="text-xs text-emerald-400 font-mono font-bold mb-6">+91 XXXXXXXXXX</p>
       
       <p class="text-xs text-slate-400 bg-slate-800/40 p-3 rounded-xl border border-white/5 mb-6 leading-relaxed">
-        இனி RO பில் Submit செய்த உடனே, பணம் கட்டிய மெம்பர்களுக்கு தானாகவே இந்த நம்பரிலிருந்து WhatsApp பில் சென்றுவிடும்!
+        When the RO submits the collection bill, automatic WhatsApp receipts will be sent from this number to paid members.
       </p>
 
       <!-- Test Message Form -->
       <div class="bg-slate-800/50 rounded-2xl p-4 border border-white/5 text-left mb-4">
-        <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">டெஸ்ட் மெசேஜ் அனுப்ப (Test Number):</label>
+        <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Send Test Message (Phone Number):</label>
         <div class="flex gap-2">
           <input id="testPhone" type="text" placeholder="10 Digit Mobile No" class="flex-1 bg-slate-900 border border-white/10 text-white rounded-xl px-3 py-2 text-xs font-mono outline-none focus:border-emerald-500" />
           <button onclick="sendTestMessage()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all">Send</button>
@@ -196,13 +196,13 @@ app.get('/whatsapp', (req, res) => {
         <p id="testResult" class="text-[11px] mt-2 hidden"></p>
       </div>
 
-      <button onclick="logoutWhatsApp()" class="text-xs text-red-400 hover:text-red-300 font-bold tracking-wider uppercase underline transition-all">Disconnect / வேறு நம்பரை இணைக்க</button>
+      <button onclick="logoutWhatsApp()" class="text-xs text-red-400 hover:text-red-300 font-bold tracking-wider uppercase underline transition-all">Disconnect / Link Another Number</button>
     </div>
 
     <!-- Loading Spinner -->
     <div id="loadingSection" class="text-center py-10">
       <div class="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-emerald-500 mx-auto mb-3"></div>
-      <p class="text-xs text-slate-400">WhatsApp Engine தொடங்குகிறது...</p>
+      <p class="text-xs text-slate-400">Starting WhatsApp Engine...</p>
     </div>
   </div>
 
@@ -228,7 +228,7 @@ app.get('/whatsapp', (req, res) => {
           connectedSection.classList.remove('hidden');
         } else if (data.status === 'SCAN_QR' && data.qrCode) {
           badge.className = 'flex items-center justify-center gap-2 py-2 px-4 rounded-xl mb-6 bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 text-xs font-bold uppercase tracking-wider';
-          badge.innerHTML = '<span class="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-ping"></span> QR Code தயார் - ஸ்கேன் செய்யவும்';
+          badge.innerHTML = '<span class="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-ping"></span> QR Code Ready - Please Scan';
 
           document.getElementById('qrImage').src = data.qrCode;
           connectedSection.classList.add('hidden');
@@ -250,22 +250,22 @@ app.get('/whatsapp', (req, res) => {
     async function sendTestMessage() {
       const phone = document.getElementById('testPhone').value.trim();
       const resEl = document.getElementById('testResult');
-      if (!phone) return alert('போன் நம்பரை உள்ளிடவும்');
+      if (!phone) return alert('Please enter a valid phone number');
       resEl.className = 'text-[11px] mt-2 text-slate-400 block';
-      resEl.textContent = 'அனுப்பப்படுகிறது...';
+      resEl.textContent = 'Sending...';
       try {
         const res = await fetch('/api/whatsapp/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone, message: '🎉 வணக்கம்! சிந்துஜா பைனான்ஸ் WhatsApp பில் வசதி வெற்றிகரமாக இணைக்கப்பட்டுள்ளது.' })
+          body: JSON.stringify({ phone, message: '🎉 Greetings! Sindhuja Finance WhatsApp receipt automation is now connected successfully.' })
         });
         const data = await res.json();
         if (data.success) {
           resEl.className = 'text-[11px] mt-2 text-emerald-400 block font-bold';
-          resEl.textContent = '✅ டெஸ்ட் மெசேஜ் வெற்றிகரமாக சென்றுவிட்டது!';
+          resEl.textContent = '✅ Test message delivered successfully!';
         } else {
           resEl.className = 'text-[11px] mt-2 text-red-400 block';
-          resEl.textContent = '❌ அனுப்ப முடியவில்லை: ' + (data.error || 'Unknown error');
+          resEl.textContent = '❌ Failed to send: ' + (data.error || 'Unknown error');
         }
       } catch (e) {
         resEl.className = 'text-[11px] mt-2 text-red-400 block';
@@ -274,7 +274,10 @@ app.get('/whatsapp', (req, res) => {
     }
 
     async function logoutWhatsApp() {
-      if (!confirm('வாட்ஸ்அப் இணைப்பை துண்டிக்க விரும்புகிறீர்களா?')) return;
+      if (!confirm('Do you want to disconnect WhatsApp session?')) return;
+      await fetch('/api/whatsapp/logout', { method: 'POST' });
+      location.reload();
+    }
       await fetch('/api/whatsapp/logout', { method: 'POST' });
       location.reload();
     }
@@ -1019,10 +1022,11 @@ app.get('/api/foreclosure/loans', async (req, res) => {
 
     let query = supabase
       .from('loans')
-      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, created_at, centers(name, staff_id), members(member_no)')
+      .select('id, member_id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, created_at, centers(name, staff_id), members(id, member_no)')
       .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED']);
 
-    if (centerId) {
+    // If searching by keyword, don't restrict to centerId so member can be tracked across any center
+    if (centerId && (!search || !search.trim())) {
       query = query.eq('center_id', centerId);
     }
 
@@ -1042,9 +1046,13 @@ app.get('/api/foreclosure/loans', async (req, res) => {
       const q = search.trim().toLowerCase();
       filtered = filtered.filter(l => 
         (l.member_name && l.member_name.toLowerCase().includes(q)) ||
+        (l.member_id && String(l.member_id).toLowerCase().includes(q)) ||
+        (l.members?.id && String(l.members.id).toLowerCase().includes(q)) ||
         (l.members?.member_no && String(l.members.member_no).toLowerCase().includes(q)) ||
         (l.mobile_no && String(l.mobile_no).includes(q)) ||
-        (l.id && String(l.id).includes(q))
+        (l.nominee_mobile && String(l.nominee_mobile).includes(q)) ||
+        (l.id && String(l.id).includes(q)) ||
+        (l.centers?.name && l.centers.name.toLowerCase().includes(q))
       );
     }
 
@@ -1239,7 +1247,7 @@ app.post('/api/loans/:loanId/foreclose', async (req, res) => {
 });
 
 // ============================================================
-// PENDING ARREARS SETTLEMENT (மொத்த நிலுவை வசூல்) ENDPOINTS
+// PENDING ARREARS SETTLEMENT ENDPOINTS
 // ============================================================
 
 // 1. Get All Members with Pending Overdue Dues
@@ -1256,7 +1264,8 @@ app.get('/api/pending-settlement/members', async (req, res) => {
       .not('status', 'in', '("Paid","Received","Verified")')
       .order('scheduled_date', { ascending: true });
 
-    if (centerId) {
+    // If searching by keyword, don't restrict to centerId so member can be tracked across any center
+    if (centerId && (!search || !search.trim())) {
       schQuery = schQuery.eq('center_id', centerId);
     }
 
@@ -1290,7 +1299,7 @@ app.get('/api/pending-settlement/members', async (req, res) => {
     // Fetch loan & member details
     const { data: loansData, error: loansErr } = await supabase
       .from('loans')
-      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, centers(name), members(member_no)')
+      .select('id, member_id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, centers(name), members(id, member_no)')
       .in('id', loanIds);
 
     if (loansErr) throw loansErr;
@@ -1313,6 +1322,7 @@ app.get('/api/pending-settlement/members', async (req, res) => {
 
       return {
         loanId: loan.id,
+        memberId: loan.member_id || loan.members?.id,
         memberName: loan.member_name,
         memberNo: loan.members?.member_no || 'N/A',
         memberPhotoUrl: loan.member_photo_url,
@@ -1335,6 +1345,7 @@ app.get('/api/pending-settlement/members', async (req, res) => {
       const q = search.trim().toLowerCase();
       filtered = filtered.filter(item => 
         (item.memberName && item.memberName.toLowerCase().includes(q)) ||
+        (item.memberId && String(item.memberId).toLowerCase().includes(q)) ||
         (item.memberNo && item.memberNo.toLowerCase().includes(q)) ||
         (item.centerName && item.centerName.toLowerCase().includes(q)) ||
         (item.mobileNo && item.mobileNo.includes(q)) ||

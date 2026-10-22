@@ -257,7 +257,7 @@ export default function PendingSettlement() {
             <FaCoins /> Arrears & Dues Settlement
           </div>
           <h1 className="text-3xl md:text-4xl font-black text-white tracking-tight">
-            மொத்த நிலுவை வசூல் & அட்ஜஸ்ட்மென்ட்
+            Arrears Dues Collection & Settlement
           </h1>
           <p className="text-slate-400 font-medium text-xs mt-1">
             Collect accumulated pending weeks, settle arrears in total, or adjust with penalty waiver
@@ -285,13 +285,13 @@ export default function PendingSettlement() {
 
         <div className="md:col-span-7 bg-white/5 border border-white/10 p-4 rounded-3xl backdrop-blur-xl">
           <label className="block text-[10px] font-black text-amber-400 uppercase tracking-widest mb-2 ml-1">
-            Search Member / No / Mobile
+            Search Member ID / No / Loan
           </label>
           <div className="relative">
             <FaSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
-              placeholder="Search by Member Name, Member No, Mobile..."
+              placeholder="Search by Member ID, Member No (e.g. LN-...), Name, Loan ID..."
               value={searchTerm}
               onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full bg-slate-900 border border-white/10 text-white rounded-2xl pl-11 pr-4 py-3 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all placeholder-slate-600"
@@ -329,14 +329,19 @@ export default function PendingSettlement() {
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                      <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-mono font-black">
+                        ID: #{item.memberId || 'N/A'}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-white/5 text-slate-300 text-[10px] font-mono font-semibold">
+                        {item.memberNo}
+                      </span>
+                    </div>
                     <h3 className="font-bold text-white text-base truncate group-hover:text-amber-400 transition-colors uppercase">
                       {item.memberName}
                     </h3>
                     <p className="text-[11px] text-slate-400 font-mono">
-                      No: {item.memberNo} • Loan #{item.loanId}
-                    </p>
-                    <p className="text-[10px] text-amber-300 font-bold uppercase tracking-wider truncate mt-0.5">
-                      {item.centerName}
+                      Loan #{item.loanId} • <span className="text-amber-300 font-bold uppercase">{item.centerName}</span>
                     </p>
                   </div>
                 </div>
@@ -373,7 +378,7 @@ export default function PendingSettlement() {
                 onClick={() => handleOpenSettlement(item.loanId)}
                 className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 active:scale-95 shadow-lg shadow-amber-500/20"
               >
-                <FaReceipt /> Settle Dues (நிலுவை தீர்வு) <FaArrowRight size={10} />
+                <FaReceipt /> Settle Dues <FaArrowRight size={10} />
               </button>
             </div>
           ))}
@@ -410,9 +415,20 @@ export default function PendingSettlement() {
               <h2 className="text-2xl font-black text-white tracking-tight">
                 {detailData?.loan?.member_name || 'Member Settlement'}
               </h2>
-              <p className="text-xs text-slate-400">
-                Center: {detailData?.loan?.centers?.name} • Member No: {detailData?.loan?.members?.member_no || 'N/A'} • Loan #{selectedLoanId}
-              </p>
+              <div className="flex items-center gap-2 flex-wrap text-xs text-slate-400 mt-1">
+                <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 font-mono font-bold text-[11px] border border-amber-500/20">
+                  Member ID: #{detailData?.loan?.member_id || detailData?.loan?.members?.id || 'N/A'}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-white/5 text-slate-300 font-mono text-[11px]">
+                  No: {detailData?.loan?.members?.member_no || 'N/A'}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-white/5 text-slate-300 font-mono text-[11px]">
+                  Loan #{selectedLoanId}
+                </span>
+                <span className="text-amber-300 font-bold uppercase">
+                  • Center: {detailData?.loan?.centers?.name}
+                </span>
+              </div>
             </div>
 
             {detailsLoading ? (
@@ -491,7 +507,7 @@ export default function PendingSettlement() {
                 <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-2xl p-4 flex items-center justify-between">
                   <div>
                     <p className="text-xs font-bold text-yellow-300">
-                      Waive Off Late Penalties (அபராத தள்ளுபடி)
+                      Waive Off Late Penalties
                     </p>
                     <p className="text-[10px] text-slate-400">
                       Zero out late fees so member only pays pure EMI dues
@@ -517,7 +533,7 @@ export default function PendingSettlement() {
 
                   <div>
                     <label className="block text-[10px] font-black uppercase text-amber-400 tracking-wider mb-1.5">
-                      Amount Member is Paying Now (செலுத்தும் தொகை):
+                      Amount Member is Paying Now:
                     </label>
                     <div className="relative">
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">₹</span>
@@ -536,7 +552,7 @@ export default function PendingSettlement() {
                   {allocationPreview.length > 0 && (
                     <div className="pt-2 border-t border-white/5">
                       <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
-                        Adjustment Split Preview (பணம் பிரியும் முறை):
+                        Adjustment Split Preview:
                       </p>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         {allocationPreview.map((item, idx) => (
@@ -572,14 +588,14 @@ export default function PendingSettlement() {
                       onChange={(e) => setPaymentMode(e.target.value)}
                       className="w-full bg-slate-900 border border-white/10 text-white rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-amber-500 outline-none"
                     >
-                      <option value="Cash">Cash (ரொக்கம்)</option>
+                      <option value="Cash">Cash</option>
                       <option value="UPI">UPI / GPay / PhonePe</option>
                       <option value="Bank Transfer">Bank Transfer / NEFT</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">
-                      Remarks / குறிப்பு (Optional)
+                      Remarks (Optional)
                     </label>
                     <input
                       type="text"
@@ -612,7 +628,7 @@ export default function PendingSettlement() {
                       <span className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-slate-950"></span>
                     ) : (
                       <>
-                        <FaCheckCircle /> Confirm Settlement (வரவு வைக்கவும்)
+                        <FaCheckCircle /> Confirm Settlement
                       </>
                     )}
                   </button>
