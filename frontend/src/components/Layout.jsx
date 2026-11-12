@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   FaSignOutAlt, FaShieldAlt, FaBars, FaTimes, FaChartPie,
   FaListUl, FaFileInvoiceDollar, FaUsers, FaChartLine, FaCheckCircle,
-  FaHandHoldingUsd, FaCoins, FaWhatsapp
+  FaHandHoldingUsd, FaCoins, FaWhatsapp, FaWallet
 } from 'react-icons/fa';
 import API_URL from '../apiConfig';
 
@@ -64,6 +64,7 @@ export default function Layout({ children }) {
   const navItems = [
     { name: 'Collections', path: '/collections', icon: <FaListUl /> },
     { name: 'Pending Settlement', path: '/pending-settlement', icon: <FaCoins /> },
+    { name: 'Savings Passbook', path: '/savings', icon: <FaWallet /> },
     { name: 'Foreclosure', path: '/foreclosure', icon: <FaHandHoldingUsd /> },
     { name: 'Dashboard', path: '/dashboard', icon: <FaChartPie /> },
   ];
@@ -142,6 +143,11 @@ export default function Layout({ children }) {
                 <p className="text-[9px] font-bold uppercase">Collected</p>
               </div>
               <p className="text-sm font-black text-white">₹{Number(stats.collectedToday || 0).toLocaleString()}</p>
+              {(Number(stats.savingCollectedToday || 0) > 0 || Number(stats.emiCollectedToday || 0) > 0) && (
+                <p className="text-[9px] font-bold text-emerald-300/80 leading-tight mt-0.5">
+                  EMI ₹{Number(stats.emiCollectedToday || 0).toLocaleString()} • Sav ₹{Number(stats.savingCollectedToday || 0).toLocaleString()}
+                </p>
+              )}
             </div>
             <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-4 flex flex-col gap-1 transition-all hover:border-amber-500/30">
               <div className="flex items-center gap-2 text-amber-400 mb-1">

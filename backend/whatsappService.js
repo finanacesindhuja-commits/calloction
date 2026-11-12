@@ -181,6 +181,8 @@ class WhatsAppService {
     date,
     week,
     amountPaid,
+    savingCredited,
+    totalSavingBalance,
     totalLoan,
     remainingBalance
   }) {
@@ -194,6 +196,8 @@ class WhatsAppService {
       `📅 *Date:* ${formattedDate}`,
       week ? `📆 *EMI Week:* ${week}` : null,
       `💵 *Amount Paid Today:* ₹${Number(amountPaid || 0).toLocaleString('en-IN')}`,
+      Number(savingCredited) > 0 ? `🪙 *Saving Credited:* ₹${Number(savingCredited).toLocaleString('en-IN')}` : null,
+      (totalSavingBalance !== undefined && totalSavingBalance !== null) ? `🏦 *Total Saving Balance:* ₹${Number(totalSavingBalance).toLocaleString('en-IN')}` : null,
       totalLoan ? `💳 *Total Loan:* ₹${Number(totalLoan).toLocaleString('en-IN')}` : null,
       (remainingBalance !== undefined && remainingBalance !== null) ? `📊 *Remaining Balance:* ₹${Number(remainingBalance).toLocaleString('en-IN')}` : null,
       `━━━━━━━━━━━━━━━━━━━━`,
@@ -242,6 +246,8 @@ class WhatsAppService {
     amountPaid,
     settledWeeks,
     waivedPenalty,
+    savingCredited,
+    totalSavingBalance,
     remainingBalance
   }) {
     const formattedDate = date || new Date().toLocaleDateString('en-GB');
@@ -254,10 +260,40 @@ class WhatsAppService {
       `📅 *Date:* ${formattedDate}`,
       settledWeeks && settledWeeks.length > 0 ? `📆 *Settled Weeks:* ${settledWeeks.join(', ')}` : null,
       `💵 *Total Amount Paid:* ₹${Number(amountPaid || 0).toLocaleString('en-IN')}`,
+      Number(savingCredited) > 0 ? `🪙 *Saving Credited:* ₹${Number(savingCredited).toLocaleString('en-IN')}` : null,
+      (totalSavingBalance !== undefined && totalSavingBalance !== null) ? `🏦 *Total Saving Balance:* ₹${Number(totalSavingBalance).toLocaleString('en-IN')}` : null,
       Number(waivedPenalty) > 0 ? `🎁 *Waived Penalty:* ₹${Number(waivedPenalty).toLocaleString('en-IN')}` : null,
       (remainingBalance !== undefined && remainingBalance !== null) ? `📊 *Total Remaining Balance:* ₹${Number(remainingBalance).toLocaleString('en-IN')}` : null,
       `━━━━━━━━━━━━━━━━━━━━`,
       `✅ *Your pending dues have been successfully settled & credited.*`,
+      `🙏 *Thank you - Sindhuja Finance!*`
+    ].filter(Boolean);
+
+    return lines.join('\n');
+  }
+
+  generateSavingWithdrawalReceiptText({
+    memberName,
+    memberNo,
+    centerName,
+    date,
+    withdrawnAmount,
+    remainingBalance,
+    notes
+  }) {
+    const formattedDate = date || new Date().toLocaleDateString('en-GB');
+    const lines = [
+      `🏦 *SINDHUJA FINANCE - SAVING WITHDRAWAL RECEIPT*`,
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `👤 *Name:* ${memberName || 'Member'}`,
+      memberNo ? `🔢 *Member No:* ${memberNo}` : null,
+      centerName ? `📍 *Center:* ${centerName}` : null,
+      `📅 *Date:* ${formattedDate}`,
+      `💵 *Saving Withdrawn:* ₹${Number(withdrawnAmount || 0).toLocaleString('en-IN')}`,
+      `🪙 *Remaining Saving Balance:* ₹${Number(remainingBalance || 0).toLocaleString('en-IN')}`,
+      notes ? `📝 *Note:* ${notes}` : null,
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `✅ *Your saving withdrawal has been processed.*`,
       `🙏 *Thank you - Sindhuja Finance!*`
     ].filter(Boolean);
 

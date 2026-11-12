@@ -4,6 +4,7 @@ import Dashboard from './page/Dashboard';
 import Collections from './page/Collections';
 import Foreclosure from './page/Foreclosure';
 import PendingSettlement from './page/PendingSettlement';
+import Savings from './page/Savings';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -43,6 +44,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Layout><PendingSettlement /></Layout>
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/savings" 
+          element={
+            <ProtectedRoute>
+              <Layout><Savings /></Layout>
             </ProtectedRoute>
           } 
         />

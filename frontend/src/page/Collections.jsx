@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FaUsers, FaSearch, FaCheckCircle, FaExclamationCircle, FaLock, FaCheck, FaTrophy, FaWhatsapp } from 'react-icons/fa';
+import { FaUsers, FaSearch, FaCheckCircle, FaExclamationCircle, FaLock, FaCheck, FaTrophy, FaWhatsapp, FaCoins } from 'react-icons/fa';
 import API_URL, { LOAN_APP_URL } from '../apiConfig';
 
 export default function Collections() {
@@ -14,8 +14,9 @@ export default function Collections() {
   // WhatsApp connection status state
   const [waStatus, setWaStatus] = useState({ isConnected: false, status: 'DISCONNECTED' });
 
-  // collectionAmounts keyed by member.id to allow inline typing per member
-  const [collectionAmounts, setCollectionAmounts] = useState({});
+  // Separate EMI and Saving inputs keyed by member.id so Saving Amount is tracked distinctly
+  const [emiAmounts, setEmiAmounts] = useState({});
+  const [savingAmounts, setSavingAmounts] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [step, setStep] = useState(1); // Step 1: Entry, Step 2: Tally
 
@@ -73,7 +74,8 @@ export default function Collections() {
       
       // Default auto-fill the amounts to full target ONLY if desired. 
       // For manual generation, we leave it blank so RO can type.
-      setCollectionAmounts({});
+      setEmiAmounts({});
+      setSavingAmounts({});
       setDenominations({2000:'',500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
     } catch (err) {
       console.error('Error fetching bills:', err);
@@ -87,14 +89,36 @@ export default function Collections() {
     setSelectedCenter(''); // Reset center selection when date changes
     setMembers([]);
     setSchedules([]);
+    setEmiAmounts({});
+    setSavingAmounts({});
     fetchCenters(date);
   };
 
-  const handleAmountChange = (memberId, value) => {
-    setCollectionAmounts(prev => ({
+  const handleEmiChange = (memberId, value) => {
+    setEmiAmounts(prev => ({
       ...prev,
       [memberId]: value
     }));
+  };
+
+  const handleSavingChange = (memberId, value) => {
+    setSavingAmounts(prev => ({
+      ...prev,
+      [memberId]: value
+    }));
+  };
+
+  const handleFillFullMember = (memberId, targetInfo) => {
+    setEmiAmounts(prev => ({
+      ...prev,
+      [memberId]: targetInfo.emiDue > 0 ? String(targetInfo.emiDue) : ''
+    }));
+    if (targetInfo.isSavingPlan && targetInfo.savingDue > 0) {
+      setSavingAmounts(prev => ({
+        ...prev,
+        [memberId]: String(targetInfo.savingDue)
+      }));
+    }
   };
 
   const handleDenomChange = (denom, value) => {
@@ -104,7 +128,36 @@ export default function Collections() {
     }));
   };
 
-  const memberTargets = {}; // Map to store each member's target info for quick access
+  const computeScheduleSplit = (s, member) => {
+    const totalAmount = Number(s.amount) || 0;
+    const penalty = Number(s.penalty) || 0;
+    const collectedSoFar = Number(s.collected_amount) || 0;
+    const explicitSaving = s.saving_amount !== null && s.saving_amount !== undefined ? Number(s.saving_amount) : null;
+    const schedSavingTarget = explicitSaving !== null
+      ? explicitSaving
+      : (member?.is_saving_plan ? (Number(member.saving_per_week) || 100) : 0);
+    const explicitEmi = s.emi_amount !== null && s.emi_amount !== undefined && Number(s.emi_amount) > 0
+      ? Number(s.emi_amount)
+      : null;
+    const schedEmiTarget = explicitEmi !== null ? explicitEmi : Math.max(0, totalAmount - schedSavingTarget);
+
+    const emiPlusPenaltyTarget = schedEmiTarget + penalty;
+    const emiCollected = Math.min(collectedSoFar, emiPlusPenaltyTarget);
+    const savingCollected = Math.max(0, Math.min(schedSavingTarget, collectedSoFar - emiPlusPenaltyTarget));
+
+    const emiDue = Math.max(0, emiPlusPenaltyTarget - emiCollected);
+    const savingDue = Math.max(0, schedSavingTarget - savingCollected);
+
+    return {
+      isSavingPlan: schedSavingTarget > 0 || Boolean(member?.is_saving_plan),
+      emiDue,
+      savingDue,
+      totalDue: emiDue + savingDue,
+      penalty
+    };
+  };
+
+  const memberTargets = {}; // Map to store each member's target info (split EMI + Saving)
   
   members.forEach((member) => {
     const memberSchedules = schedules.filter(s => 
@@ -118,18 +171,27 @@ export default function Collections() {
       return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate === selectedDate);
     });
     
-    let targetAmount = 0;
+    let emiDueSum = 0;
+    let savingDueSum = 0;
     let penaltyAmount = 0;
+    let isSavingPlan = Boolean(member.is_saving_plan);
     let weekStrings = [];
     
     matchingSchedules.forEach(s => {
-      targetAmount += (Number(s.amount) - (Number(s.collected_amount) || 0));
-      penaltyAmount += Number(s.penalty) || 0;
+      const split = computeScheduleSplit(s, member);
+      emiDueSum += split.emiDue;
+      savingDueSum += split.savingDue;
+      penaltyAmount += split.penalty;
+      if (split.isSavingPlan) isSavingPlan = true;
       if (s.week_number) weekStrings.push(`Week ${s.week_number}`);
     });
     
     memberTargets[member.id] = {
-      amount: targetAmount + penaltyAmount,
+      amount: emiDueSum + savingDueSum,
+      emiDue: emiDueSum,
+      savingDue: savingDueSum,
+      isSavingPlan,
+      planName: member.scheme_name || (isSavingPlan ? 'Saving Plan' : ''),
       penalty: penaltyAmount,
       week: weekStrings.length > 0 ? weekStrings.join(', ') : null
     };
@@ -151,30 +213,19 @@ export default function Collections() {
     );
   });
 
-  // Overall calculations for the Center Date View
+  // Overall calculations for the Center Date View (with EMI vs Saving breakdown)
   let totalCenterTarget = 0;
+  let totalCenterEmiTarget = 0;
+  let totalCenterSavingTarget = 0;
   let centerGlobalTarget = 0;
   
   members.forEach(member => {
-    // Robust matching: Try ID first, then Name fallback if ID fails
-    const memberSchedules = schedules.filter(s => 
-      (s.loan_id && String(s.loan_id) === String(member.id)) || 
-      (s.member_name && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase())
-    );
-    
-    // Find active schedules that are truly due (outstanding)
-    const mSchedules = memberSchedules.filter(s => {
-      const sDate = s.scheduled_date.split('T')[0].split(' ')[0];
-      const cleanStatus = s.status ? String(s.status).trim() : '';
-      return (cleanStatus === 'Pending' || cleanStatus === 'Approved' || cleanStatus === 'Partial' || cleanStatus === 'Active') && (sDate === selectedDate);
-    });
-    
-    let mTarget = 0;
-    mSchedules.forEach(s => {
-      mTarget += ((Number(s.amount) + (Number(s.penalty) || 0)) - (Number(s.collected_amount) || 0));
-    });
-
-    totalCenterTarget += mTarget;
+    const t = memberTargets[member.id];
+    if (t) {
+      totalCenterEmiTarget += t.emiDue || 0;
+      totalCenterSavingTarget += t.savingDue || 0;
+      totalCenterTarget += t.amount || 0;
+    }
   });
   centerGlobalTarget = totalCenterTarget;
 
@@ -193,8 +244,10 @@ export default function Collections() {
     return target > 0;
   });
 
-  // Tally Calculations
-  const totalDraftCollection = Object.values(collectionAmounts).reduce((sum, amount) => sum + (Number(amount) || 0), 0);
+  // Tally Calculations (Separate EMI + Saving sums)
+  const totalDraftEmi = Object.values(emiAmounts).reduce((sum, amount) => sum + (Number(amount) || 0), 0);
+  const totalDraftSaving = Object.values(savingAmounts).reduce((sum, amount) => sum + (Number(amount) || 0), 0);
+  const totalDraftCollection = totalDraftEmi + totalDraftSaving;
   const remainingCenterTarget = Math.max(0, totalCenterTarget - totalDraftCollection);
   const totalDenominations = Object.entries(denominations).reduce((sum, [denom, count]) => sum + (Number(denom) * (Number(count) || 0)), 0);
   
@@ -210,15 +263,20 @@ export default function Collections() {
 
     setIsSubmitting(true);
     const paymentsToProcess = [];
+    const staffName = localStorage.getItem('name') || localStorage.getItem('staffId') || 'Collection RO';
+
+    // Collect union of all member IDs that have either EMI or Saving input entered
+    const enteredMemberIds = new Set([...Object.keys(emiAmounts), ...Object.keys(savingAmounts)]);
 
     // Waterfall logic for each member's payment
-    for (const memberIdStr of Object.keys(collectionAmounts)) {
-       const rawValue = collectionAmounts[memberIdStr];
-       if (rawValue !== '') {
-         const amountEntered = Number(rawValue);
+    for (const memberIdStr of enteredMemberIds) {
+       const emiEntered = Number(emiAmounts[memberIdStr]) || 0;
+       const savingEntered = Number(savingAmounts[memberIdStr]) || 0;
+       const amountEntered = emiEntered + savingEntered;
+       if (amountEntered > 0) {
           const memberId = Number(memberIdStr);
           const member = members.find(m => m.id === memberId);
-          // Get all active schedules that are due on or before selected date (including arrears)
+          // Get all active schedules that are due on selected date
            const mSchedules = schedules
              .filter(s => {
                const isMatch = (s.loan_id && String(s.loan_id) === String(memberId)) ||
@@ -258,7 +316,7 @@ export default function Collections() {
       const res = await fetch(`${API_URL}/api/collections/batch-pay`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payments: paymentsToProcess })
+        body: JSON.stringify({ payments: paymentsToProcess, staffName })
       });
       if (res.ok) {
         const data = await res.json();
@@ -274,7 +332,8 @@ export default function Collections() {
               setSelectedCenter('');
               setMembers([]);
               setSchedules([]);
-              setCollectionAmounts({});
+              setEmiAmounts({});
+              setSavingAmounts({});
               fetchCenters(selectedDate);
             }
           });
@@ -291,7 +350,8 @@ export default function Collections() {
             setSelectedCenter('');
             setMembers([]);
             setSchedules([]);
-            setCollectionAmounts({});
+            setEmiAmounts({});
+            setSavingAmounts({});
             fetchCenters(selectedDate); // Refresh centers list to reflect paid status
           }
         });
@@ -397,6 +457,12 @@ export default function Collections() {
                 <div className="w-full md:w-auto bg-white/5 md:bg-transparent rounded-2xl md:rounded-none p-4 md:p-0 border border-white/5 md:border-0 text-center md:text-left">
                   <p className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em] mb-1">Total Center Target</p>
                   <h2 className="text-4xl text-white tracking-tighter shadow-blue-500/10"><span className="text-2xl opacity-50 mr-1">₹</span>{centerGlobalTarget.toLocaleString()}</h2>
+                  {totalCenterSavingTarget > 0 && (
+                    <div className="flex items-center justify-center md:justify-start gap-2 mt-1.5 text-[10px] font-black uppercase tracking-wider">
+                      <span className="text-blue-300 bg-blue-500/10 px-2 py-0.5 rounded-md border border-blue-500/20">EMI: ₹{totalCenterEmiTarget.toLocaleString()}</span>
+                      <span className="text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">Saving: ₹{totalCenterSavingTarget.toLocaleString()}</span>
+                    </div>
+                  )}
                 </div>
                 
                 <div className="flex-1 w-full relative group">
@@ -422,16 +488,19 @@ export default function Collections() {
                   <thead className="hidden md:table-header-group">
                     <tr className="bg-white/5 border-b border-white/10">
                       <th className="px-6 py-5 text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Member Info</th>
-                      <th className="px-6 py-5 text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Target / Due</th>
-                      <th className="px-6 py-5 text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Manual Deposit</th>
+                      <th className="px-6 py-5 text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Target / Due (EMI & Saving)</th>
+                      <th className="px-6 py-5 text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Manual Deposit (Separate Saving)</th>
                     </tr>
                   </thead>
                   <tbody className="block md:table-row-group space-y-4 md:space-y-0 md:divide-y md:divide-white/5 p-4 md:p-0">
                     {membersWithDue.length > 0 ? (
                       membersWithDue.map((member) => {
-                        const targetInfo = memberTargets[member.id] || { amount: 0, week: null };
+                        const targetInfo = memberTargets[member.id] || { amount: 0, emiDue: 0, savingDue: 0, isSavingPlan: false, week: null };
                         const target = targetInfo.amount;
                         const weekStr = targetInfo.week;
+                        const enteredEmi = Number(emiAmounts[member.id]) || 0;
+                        const enteredSaving = Number(savingAmounts[member.id]) || 0;
+                        const showEmiFirstWarn = targetInfo.isSavingPlan && enteredSaving > 0 && enteredEmi < targetInfo.emiDue;
                         
                         return (
                           <tr key={member.id} className="group block md:table-row bg-slate-800/40 md:bg-transparent rounded-2xl md:rounded-none border border-white/5 md:border-0 hover:bg-white/5 transition-colors">
@@ -450,10 +519,15 @@ export default function Collections() {
                                 </div>
                                 <div className="flex flex-col gap-1.5">
                                   <p className="font-bold text-white text-sm md:text-md uppercase tracking-tight">{member.member_name}</p>
-                                  <div className="flex gap-2">
+                                  <div className="flex flex-wrap gap-1.5">
                                     <span className="text-[9px] px-2 py-0.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded text-center font-mono font-bold tracking-widest uppercase">
                                       Member No: {member.member_no || 'N/A'}
                                     </span>
+                                    {targetInfo.isSavingPlan && (
+                                      <span className="text-[9px] px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-black tracking-wider uppercase flex items-center gap-1">
+                                        <FaCoins size={9} /> Saving Plan
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -461,11 +535,21 @@ export default function Collections() {
                             <td className="px-5 py-4 md:px-6 md:py-5 flex justify-between items-center md:table-cell border-b border-white/5 md:border-0">
                               <span className="md:hidden text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Target / Due</span>
                               {target > 0 ? (
-                                <div className="flex flex-col items-end md:items-start gap-1">
-                                  <div className="flex items-center gap-2">
-                                    <span className="px-3 py-1.5 bg-red-500/10 text-red-400 text-sm font-black rounded-xl font-mono tracking-tighter border border-red-500/20 shadow-inner">
+                                <div className="flex flex-col items-end md:items-start gap-1.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="px-3 py-1 bg-red-500/10 text-red-400 text-sm font-black rounded-xl font-mono tracking-tighter border border-red-500/20 shadow-inner">
                                       ₹{target.toLocaleString()}
                                     </span>
+                                    {targetInfo.isSavingPlan && (
+                                      <>
+                                        <span className="px-2 py-1 bg-blue-500/10 text-blue-300 text-[10px] font-black rounded-lg font-mono border border-blue-500/20">
+                                          EMI: ₹{targetInfo.emiDue.toLocaleString()}
+                                        </span>
+                                        <span className="px-2 py-1 bg-emerald-500/15 text-emerald-300 text-[10px] font-black rounded-lg font-mono border border-emerald-500/30">
+                                          Saving: ₹{targetInfo.savingDue.toLocaleString()}
+                                        </span>
+                                      </>
+                                    )}
                                     {targetInfo.penalty > 0 && (
                                       <span className="px-2 py-1 bg-yellow-500/10 text-yellow-400 text-[9px] font-black rounded-lg uppercase tracking-widest border border-yellow-500/20 shadow-inner whitespace-nowrap">
                                           + ₹{targetInfo.penalty} Late Fee
@@ -483,16 +567,58 @@ export default function Collections() {
                             <td className="px-5 py-4 md:px-6 md:py-5 block md:table-cell bg-black/20 md:bg-transparent rounded-b-2xl md:rounded-none">
                               <div className="flex flex-col gap-2">
                                 <span className="md:hidden text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Manual Deposit</span>
-                                <div className="relative w-full md:max-w-[150px]">
-                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">₹</span>
-                                  <input 
-                                    type="number" 
-                                    placeholder="0"
-                                    value={collectionAmounts[member.id] || ''}
-                                    onChange={(e) => handleAmountChange(member.id, e.target.value)}
-                                    className={`w-full bg-slate-900 border text-white rounded-xl py-3 pl-8 pr-4 font-mono font-bold focus:outline-none transition-all ${collectionAmounts[member.id] ? 'border-blue-500 shadow-[0_0_15px_-3px_rgba(59,130,246,0.5)]' : 'border-white/10 focus:border-white/30'}`}
-                                  />
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="flex flex-col">
+                                    {targetInfo.isSavingPlan && (
+                                      <span className="text-[9px] font-black text-blue-300/80 uppercase tracking-widest mb-1 pl-1">EMI Amount</span>
+                                    )}
+                                    <div className="relative w-32 md:w-36">
+                                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">₹</span>
+                                      <input 
+                                        type="number" 
+                                        min="0"
+                                        placeholder={targetInfo.emiDue > 0 ? String(targetInfo.emiDue) : '0'}
+                                        value={emiAmounts[member.id] || ''}
+                                        onChange={(e) => handleEmiChange(member.id, e.target.value)}
+                                        className={`w-full bg-slate-900 border text-white rounded-xl py-2.5 pl-8 pr-3 font-mono font-bold focus:outline-none transition-all ${emiAmounts[member.id] ? 'border-blue-500 shadow-[0_0_15px_-3px_rgba(59,130,246,0.5)]' : 'border-white/10 focus:border-white/30'}`}
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {targetInfo.isSavingPlan && (
+                                    <div className="flex flex-col">
+                                      <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1 pl-1">Saving Amount</span>
+                                      <div className="relative w-28 md:w-32">
+                                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500/70 font-bold">₹</span>
+                                        <input 
+                                          type="number" 
+                                          min="0"
+                                          placeholder={targetInfo.savingDue > 0 ? String(targetInfo.savingDue) : '0'}
+                                          value={savingAmounts[member.id] || ''}
+                                          onChange={(e) => handleSavingChange(member.id, e.target.value)}
+                                          className={`w-full bg-emerald-950/30 border text-emerald-200 rounded-xl py-2.5 pl-8 pr-3 font-mono font-bold focus:outline-none transition-all ${savingAmounts[member.id] ? 'border-emerald-500 shadow-[0_0_15px_-3px_rgba(16,185,129,0.45)]' : 'border-emerald-500/30 focus:border-emerald-400'}`}
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleFillFullMember(member.id, targetInfo)}
+                                    className="self-end mb-0.5 px-2.5 py-2.5 bg-white/5 hover:bg-blue-500/20 text-[10px] font-black uppercase tracking-wider text-slate-300 hover:text-blue-300 border border-white/10 hover:border-blue-500/30 rounded-xl transition-all"
+                                    title="Auto-fill full EMI and Saving target"
+                                  >
+                                    Full
+                                  </button>
                                 </div>
+                                {targetInfo.isSavingPlan && (enteredEmi > 0 || enteredSaving > 0) && (
+                                  <div className="flex items-center gap-2 text-[10px] font-bold">
+                                    <span className="text-slate-400">Row Total: <span className="text-white font-mono">₹{(enteredEmi + enteredSaving).toLocaleString()}</span></span>
+                                    {showEmiFirstWarn && (
+                                      <span className="text-amber-400">• Partial note: EMI ₹{targetInfo.emiDue} fills first before Saving</span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -509,7 +635,18 @@ export default function Collections() {
                 </table>
               </div>
 
-              <div className="p-8 bg-slate-900/50 border-t border-white/10 flex justify-end">
+              <div className="p-8 bg-slate-900/50 border-t border-white/10 flex flex-col md:flex-row justify-between items-center gap-4">
+                <div className="flex flex-wrap items-center gap-3 text-xs font-black uppercase tracking-wider">
+                  <span className="px-3 py-1.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-300">
+                    EMI Entry: ₹{totalDraftEmi.toLocaleString()}
+                  </span>
+                  <span className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
+                    Saving Entry: ₹{totalDraftSaving.toLocaleString()}
+                  </span>
+                  <span className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-white">
+                    Total Cash: ₹{totalDraftCollection.toLocaleString()}
+                  </span>
+                </div>
                 <button 
                   disabled={totalDraftCollection === 0}
                   onClick={() => setStep(2)}
@@ -536,6 +673,13 @@ export default function Collections() {
                   <div className="bg-blue-500/5 border border-blue-500/20 rounded-3xl p-8 mb-10 text-center shadow-inner group">
                     <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 group-hover:tracking-[0.3em] transition-all">Total Collection Generated</p>
                     <h2 className="text-5xl font-black text-white tracking-tighter">₹{totalDraftCollection.toLocaleString()}</h2>
+                    {totalDraftSaving > 0 && (
+                      <div className="flex justify-center items-center gap-3 mt-4 text-xs font-black uppercase tracking-wider">
+                        <span className="px-3 py-1 bg-blue-500/10 text-blue-300 border border-blue-500/20 rounded-xl">EMI: ₹{totalDraftEmi.toLocaleString()}</span>
+                        <span className="text-slate-500">+</span>
+                        <span className="px-3 py-1 bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 rounded-xl">Saving: ₹{totalDraftSaving.toLocaleString()}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 mb-10">

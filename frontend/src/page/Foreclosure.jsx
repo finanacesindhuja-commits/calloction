@@ -523,6 +523,22 @@ export default function Foreclosure() {
                   </div>
                 </div>
 
+                {(loanDetails.summary.availableSavingBalance > 0 || selectedLoan.is_saving_plan) && (
+                  <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-2xl p-4 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
+                        Member Saving Balance (Carry-Forward)
+                      </p>
+                      <p className="text-[11px] text-slate-300 mt-0.5">
+                        Remains available in Savings Passbook for withdrawal/refund after loan closure.
+                      </p>
+                    </div>
+                    <span className="text-lg font-black font-mono text-emerald-300 shrink-0">
+                      ₹{Number(loanDetails.summary.availableSavingBalance || 0).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+
                 {/* Foreclosure Calculation Form */}
                 <div className="bg-blue-600/10 border border-blue-500/20 rounded-2xl p-5 space-y-4">
                   <div className="flex justify-between items-center text-sm">

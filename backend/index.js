@@ -325,56 +325,180 @@ const getEMIAmount = (amountSanctioned, weekNumber) => {
 };
 
 // ============================================================
-// AUTO-HEAL: Silently fix null loan_ids + wrong amounts for a center
-// Called in background whenever bills are fetched — zero UI impact
+// MEMBER SAVINGS HELPERS (WEEKLY_SAVING / WITHDRAWAL / STP)
+// Rule: Partial payments cover EMI (+ penalty) first; remaining
+// excess up to saving_amount is credited as WEEKLY_SAVING.
+// Unique constraint on member_savings.schedule_id is respected.
 // ============================================================
-async function autoHealCenter(centerId) {
+const getScheduleSplit = (schedule) => {
+  const totalBill = Number(schedule.amount) || 0;
+  const savingAmount = Number(schedule.saving_amount) || 0;
+  const emiAmount = (schedule.emi_amount !== null && schedule.emi_amount !== undefined && Number(schedule.emi_amount) > 0)
+    ? Number(schedule.emi_amount)
+    : Math.max(0, totalBill - savingAmount);
+  return { emiAmount, savingAmount, totalBill };
+};
+
+async function recalculateLoanTotalSaving(loanId) {
+  if (!loanId) return { balance: 0, weeklyTotal: 0, withdrawalTotal: 0 };
+  const { data: rows, error } = await supabase
+    .from('member_savings')
+    .select('transaction_type, amount')
+    .eq('loan_id', loanId);
+
+  if (error) {
+    console.error('[Savings] Recalc error:', error.message);
+    return { balance: 0, weeklyTotal: 0, withdrawalTotal: 0 };
+  }
+
+  let weeklyTotal = 0;
+  let withdrawalTotal = 0;
+  (rows || []).forEach(r => {
+    const amt = Number(r.amount) || 0;
+    if (r.transaction_type === 'WEEKLY_SAVING') weeklyTotal += amt;
+    else if (r.transaction_type === 'WITHDRAWAL') withdrawalTotal += amt;
+  });
+
+  const balance = Math.max(0, weeklyTotal - withdrawalTotal);
+  await supabase.from('loans').update({ total_saving: balance }).eq('id', loanId);
+  return { balance, weeklyTotal, withdrawalTotal };
+}
+
+async function syncScheduleSaving(schedule, totalCollectedOnSchedule, penalty = 0, createdBy = 'Collection RO') {
   try {
-    // 1. Fetch loans for this center
-    const { data: loans } = await supabase.from('loans').select('id, member_name, amount_sanctioned, member_id').eq('center_id', centerId);
-    if (!loans || loans.length === 0) return;
+    if (!schedule || !schedule.id || !schedule.loan_id) return 0;
+    const { emiAmount, savingAmount } = getScheduleSplit(schedule);
+    if (savingAmount <= 0) return 0;
 
-    const loanByName = {};
-    const loanById = {};
-    loans.forEach(l => {
-      loanByName[l.member_name?.trim()?.toLowerCase()] = l;
-      loanById[l.id] = l;
-    });
+    // Priority rule: EMI (+ penalty) first, balance up to savingAmount goes to WEEKLY_SAVING
+    const emiPlusPenalty = emiAmount + Math.max(0, Number(penalty) || 0);
+    const eligibleSaving = Math.min(savingAmount, Math.max(0, Number(totalCollectedOnSchedule || 0) - emiPlusPenalty));
 
-    // 2. Fetch all schedules for this center
-    const { data: schedules } = await supabase.from('collection_schedules').select('*').eq('center_id', centerId);
-    if (!schedules || schedules.length === 0) return;
+    // Check existing WEEKLY_SAVING entry for this unique schedule_id
+    const { data: existing } = await supabase
+      .from('member_savings')
+      .select('id, amount, transaction_type')
+      .eq('schedule_id', schedule.id)
+      .maybeSingle();
 
-    for (const s of schedules) {
-      const updates = {};
-      let loan = s.loan_id ? loanById[s.loan_id] : null;
-
-      // Fix null loan_id by matching member_name
-      if (!s.loan_id) {
-        const matched = loanByName[s.member_name?.trim()?.toLowerCase()];
-        if (matched) {
-          updates.loan_id = matched.id;
-          updates.member_id = matched.member_id;
-          loan = matched;
-        }
+    if (existing) {
+      // Never downgrade an already credited amount (e.g. if Manager Control credited it)
+      const prevAmt = Number(existing.amount) || 0;
+      if (eligibleSaving > prevAmt && existing.transaction_type === 'WEEKLY_SAVING') {
+        await supabase
+          .from('member_savings')
+          .update({
+            amount: eligibleSaving,
+            notes: `Week ${schedule.week_number || '-'} saving updated (₹${emiAmount} EMI + ₹${eligibleSaving} Saving)`
+          })
+          .eq('id', existing.id);
+        await recalculateLoanTotalSaving(schedule.loan_id);
+        return eligibleSaving;
       }
+      return prevAmt;
+    }
 
-      // Fix wrong EMI amount
-      if (loan) {
+    if (eligibleSaving <= 0) return 0;
+
+    const { error: insertErr } = await supabase
+      .from('member_savings')
+      .insert([{
+        loan_id: schedule.loan_id,
+        member_id: schedule.member_id || null,
+        member_name: schedule.member_name || '',
+        center_id: schedule.center_id || null,
+        center_name: schedule.center_name || '',
+        schedule_id: schedule.id,
+        week_number: schedule.week_number || null,
+        transaction_type: 'WEEKLY_SAVING',
+        amount: eligibleSaving,
+        notes: `Week ${schedule.week_number || '-'} collection saving (₹${emiAmount} EMI + ₹${eligibleSaving} Saving)`,
+        created_by: createdBy || 'Collection RO'
+      }]);
+
+    // Handle race condition on unique schedule_id gracefully
+    if (insertErr && insertErr.code === '23505') {
+      const { data: raceRow } = await supabase
+        .from('member_savings')
+        .select('id, amount, transaction_type')
+        .eq('schedule_id', schedule.id)
+        .maybeSingle();
+      if (raceRow && eligibleSaving > (Number(raceRow.amount) || 0) && raceRow.transaction_type === 'WEEKLY_SAVING') {
+        await supabase.from('member_savings').update({ amount: eligibleSaving }).eq('id', raceRow.id);
+      }
+    } else if (insertErr) {
+      console.error('[Savings] Insert error:', insertErr.message);
+      return 0;
+    }
+
+    await recalculateLoanTotalSaving(schedule.loan_id);
+    return eligibleSaving;
+  } catch (err) {
+    console.error('[Savings] Sync error:', err.message);
+    return 0;
+  }
+}
+
+// ============================================================
+// AUTO-HEAL: Silently fix null loan_ids + wrong amounts for a center
+// Preserves Saving Plan amounts (emi_amount + saving_amount) untouched!
+// ============================================================
+async function healCenterSchedules(centerId) {
+  const { data: loans } = await supabase
+    .from('loans')
+    .select('id, member_name, amount_sanctioned, member_id, is_saving_plan, saving_per_week')
+    .eq('center_id', centerId);
+  if (!loans || loans.length === 0) return 0;
+
+  const loanByName = {};
+  const loanById = {};
+  loans.forEach(l => {
+    loanByName[l.member_name?.trim()?.toLowerCase()] = l;
+    loanById[l.id] = l;
+  });
+
+  const { data: schedules } = await supabase.from('collection_schedules').select('*').eq('center_id', centerId);
+  if (!schedules || schedules.length === 0) return 0;
+
+  let fixedCount = 0;
+  for (const s of schedules) {
+    const updates = {};
+    let loan = s.loan_id ? loanById[s.loan_id] : null;
+
+    if (!s.loan_id) {
+      const matched = loanByName[s.member_name?.trim()?.toLowerCase()];
+      if (matched) {
+        updates.loan_id = matched.id;
+        updates.member_id = matched.member_id;
+        loan = matched;
+      }
+    }
+
+    // Protect Saving Plan loans from being overwritten with 12-week non-saving EMI table
+    if (loan) {
+      const isSaving = Boolean(loan.is_saving_plan) || (Number(s.saving_amount) || 0) > 0 || (Number(s.emi_amount) || 0) > 0;
+      if (!isSaving) {
         const correctAmount = getEMIAmount(loan.amount_sanctioned, s.week_number);
         if (correctAmount !== null && s.amount !== correctAmount) {
           updates.amount = correctAmount;
-          // Also fix collected_amount for paid weeks if it was matching old wrong amount
           if (['Paid', 'Received', 'Verified'].includes(s.status) && s.collected_amount === s.amount) {
             updates.collected_amount = correctAmount;
           }
         }
       }
-
-      if (Object.keys(updates).length > 0) {
-        await supabase.from('collection_schedules').update(updates).eq('id', s.id);
-      }
     }
+
+    if (Object.keys(updates).length > 0) {
+      const { error } = await supabase.from('collection_schedules').update(updates).eq('id', s.id);
+      if (!error) fixedCount++;
+    }
+  }
+  return fixedCount;
+}
+
+async function autoHealCenter(centerId) {
+  try {
+    await healCenterSchedules(centerId);
   } catch (err) {
     // Silent — auto-heal must never crash the main request
     console.error('[AutoHeal] Error:', err.message);
@@ -400,14 +524,14 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
         allowedCenterIds = (staffCenters || []).map(c => c.id);
         
         if (allowedCenterIds.length === 0) {
-          return { targetToday: 0, collectedToday: 0, activeCenters: 0, efficiency: 0 };
+          return { targetToday: 0, collectedToday: 0, emiCollectedToday: 0, savingCollectedToday: 0, activeCenters: 0, efficiency: 0, centerDues: [] };
         }
       }
 
       // 1. Current Target Collection (Dues up to today)
       let schQuery = supabase
         .from('collection_schedules')
-        .select('amount, status, collected_amount, loan_id, member_id, scheduled_date, approved_at, center_id')
+        .select('id, amount, emi_amount, saving_amount, status, collected_amount, loan_id, member_id, scheduled_date, approved_at, center_id')
         .order('scheduled_date', { ascending: true });
 
       if (allowedCenterIds) {
@@ -421,6 +545,7 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
       let targetToday = 0; // Remaining total due as of RIGHT NOW
       let strictlyCollectedToday = 0; // Cash physically collected today
       let startOfDayTarget = 0; // What was due when the RO woke up today
+      const todayScheduleIds = [];
 
       const { data: allCentersData } = await supabase.from('centers').select('id, name');
       const centerMap = {};
@@ -453,12 +578,27 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
             // If a payment was made TODAY, the target this morning included what they just paid
             strictlyCollectedToday += collected;
             startOfDayTarget += (due > 0 ? due : 0) + collected;
+            if (s.id) todayScheduleIds.push(s.id);
           } else if (s.status !== 'Paid') {
             // If no payment was made today, whatever is due right now was also due this morning
             startOfDayTarget += due > 0 ? due : 0;
           }
         }
       });
+
+      // Calculate Saving portion credited on today's collected schedules
+      let savingCollectedToday = 0;
+      if (todayScheduleIds.length > 0) {
+        const { data: todaySavings } = await supabase
+          .from('member_savings')
+          .select('amount')
+          .in('schedule_id', todayScheduleIds)
+          .eq('transaction_type', 'WEEKLY_SAVING');
+        (todaySavings || []).forEach(sv => {
+          savingCollectedToday += Number(sv.amount) || 0;
+        });
+      }
+      const emiCollectedToday = Math.max(0, strictlyCollectedToday - savingCollectedToday);
 
       const efficiency = startOfDayTarget > 0 
         ? Math.round((strictlyCollectedToday / startOfDayTarget) * 100) 
@@ -491,6 +631,8 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
       return {
         targetToday,
         collectedToday,
+        emiCollectedToday,
+        savingCollectedToday,
         activeCenters,
         efficiency,
         centerDues
@@ -567,12 +709,12 @@ app.get('/api/centers', cacheMiddleware(15), async (req, res) => {
   }
 });
 
-// GET 12-Week Bills for a Center
+// GET 12/15-Week Bills for a Center
 app.get('/api/bills/:centerId', async (req, res) => {
   try {
     const { centerId } = req.params;
 
-    // AUTO-HEAL: Run silently in background — fix null loan_ids & wrong amounts
+    // AUTO-HEAL: Run silently in background — fix null loan_ids & wrong amounts (preserves saving plans)
     autoHealCenter(parseInt(centerId)).catch(() => {});
     
     // 1. Get all schedules for this center
@@ -590,10 +732,10 @@ app.get('/api/bills/:centerId', async (req, res) => {
       penalty: getPenalty(s.scheduled_date, s.status)
     }));
 
-    // 2. Get members of this center — include CLOSED loans so frontend can show status
+    // 2. Get members of this center — include CLOSED loans & Saving Plan fields
     const { data: members, error: memError } = await supabase
       .from('loans')
-      .select('member_name, id, amount_sanctioned, member_photo_url, status, members(member_no)')
+      .select('member_name, id, member_id, amount_sanctioned, member_photo_url, status, is_saving_plan, stp_amount, saving_per_week, total_saving, scheme_name, members(member_no)')
       .eq('center_id', centerId)
       .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED', 'CLOSED']);
 
@@ -613,7 +755,7 @@ app.get('/api/bills/:centerId', async (req, res) => {
   }
 });
 
-// POST: Full system audit — fix all null loan_ids & wrong amounts across all centers
+// POST: Full system audit — fix all null loan_ids & wrong amounts across all centers (preserving saving plans)
 app.post('/api/admin/heal-all', async (req, res) => {
   try {
     const { data: centers } = await supabase.from('centers').select('id, name');
@@ -623,49 +765,7 @@ app.post('/api/admin/heal-all', async (req, res) => {
     const report = [];
 
     for (const center of centers) {
-      const { data: loans } = await supabase.from('loans').select('id, member_name, amount_sanctioned, member_id').eq('center_id', center.id);
-      if (!loans || loans.length === 0) continue;
-
-      const loanByName = {};
-      const loanById = {};
-      loans.forEach(l => {
-        loanByName[l.member_name?.trim()?.toLowerCase()] = l;
-        loanById[l.id] = l;
-      });
-
-      const { data: schedules } = await supabase.from('collection_schedules').select('*').eq('center_id', center.id);
-      if (!schedules || schedules.length === 0) continue;
-
-      let centerFixed = 0;
-      for (const s of schedules) {
-        const updates = {};
-        let loan = s.loan_id ? loanById[s.loan_id] : null;
-
-        if (!s.loan_id) {
-          const matched = loanByName[s.member_name?.trim()?.toLowerCase()];
-          if (matched) {
-            updates.loan_id = matched.id;
-            updates.member_id = matched.member_id;
-            loan = matched;
-          }
-        }
-
-        if (loan) {
-          const correctAmount = getEMIAmount(loan.amount_sanctioned, s.week_number);
-          if (correctAmount !== null && s.amount !== correctAmount) {
-            updates.amount = correctAmount;
-            if (['Paid', 'Received', 'Verified'].includes(s.status) && s.collected_amount === s.amount) {
-              updates.collected_amount = correctAmount;
-            }
-          }
-        }
-
-        if (Object.keys(updates).length > 0) {
-          const { error } = await supabase.from('collection_schedules').update(updates).eq('id', s.id);
-          if (!error) centerFixed++;
-        }
-      }
-
+      const centerFixed = await healCenterSchedules(center.id);
       if (centerFixed > 0) {
         totalFixed += centerFixed;
         report.push({ center: center.name, fixed: centerFixed });
@@ -682,12 +782,12 @@ app.post('/api/admin/heal-all', async (req, res) => {
 app.post('/api/collections/:id/pay', async (req, res) => {
   try {
     const { id } = req.params;
-    const { collectedAmount } = req.body;
+    const { collectedAmount, staffName } = req.body;
 
-    // First find the original schedule amount + loan_id + member info
+    // First find the original schedule amount + loan_id + member info + saving split
     const { data: schedule, error: schError } = await supabase
       .from('collection_schedules')
-      .select('amount, scheduled_date, status, loan_id, member_id, week_number, collected_amount, center_id')
+      .select('id, amount, emi_amount, saving_amount, scheduled_date, status, loan_id, member_id, member_name, week_number, collected_amount, center_id, center_name')
       .eq('id', id)
       .single();
 
@@ -719,6 +819,9 @@ app.post('/api/collections/:id/pay', async (req, res) => {
       .select();
 
     if (error) throw error;
+
+    // Sync WEEKLY_SAVING ledger into member_savings & loans.total_saving (respects EMI-first partial rule)
+    const savingCredited = await syncScheduleSaving(schedule, amountToSave, penalty, staffName || 'Collection RO');
 
     // --- CHECK FOR LOAN CLOSURE ---
     // Trigger for every payment — handles ARCHIVED + DISBURSED loans equally
@@ -765,7 +868,7 @@ app.post('/api/collections/:id/pay', async (req, res) => {
     const paidThisTime = amountToSave - (Number(schedule.collected_amount) || 0);
     if (paidThisTime > 0 && schedule.loan_id) {
       supabase.from('loans')
-        .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, centers(name), members(member_no)')
+        .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, is_saving_plan, total_saving, centers(name), members(member_no)')
         .eq('id', schedule.loan_id)
         .single()
         .then(async ({ data: loan }) => {
@@ -795,6 +898,8 @@ app.post('/api/collections/:id/pay', async (req, res) => {
                 date: new Date().toLocaleDateString('en-GB'),
                 week: schedule.week_number ? `Week ${schedule.week_number}` : '',
                 amountPaid: paidThisTime,
+                savingCredited: savingCredited > 0 ? savingCredited : null,
+                totalSavingBalance: loan.is_saving_plan ? (Number(loan.total_saving) || 0) : null,
                 totalLoan: loan.amount_sanctioned,
                 remainingBalance: remainingBal
               });
@@ -810,7 +915,7 @@ app.post('/api/collections/:id/pay', async (req, res) => {
         }).catch(err => console.error('[WhatsApp] Error preparing single receipt:', err.message));
     }
 
-    res.json({ ...data[0], closedLoan });
+    res.json({ ...data[0], closedLoan, savingCredited });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -819,23 +924,25 @@ app.post('/api/collections/:id/pay', async (req, res) => {
 // POST: Batch Record Payments for a Center
 app.post('/api/collections/batch-pay', async (req, res) => {
   try {
-    const { payments } = req.body;
+    const { payments, staffName } = req.body;
     if (!payments || !payments.length) return res.status(400).json({ error: 'No payments provided' });
 
-    // Fetch original schedules to verify target amounts
+    // Fetch original schedules to verify target amounts & saving split
     const scheduleIds = payments.map(p => p.scheduleId);
     const { data: schedules, error: schError } = await supabase
       .from('collection_schedules')
-      .select('id, amount, loan_id, scheduled_date, status, week_number, collected_amount')
+      .select('id, amount, emi_amount, saving_amount, loan_id, member_id, member_name, center_id, center_name, scheduled_date, status, week_number, collected_amount')
       .in('id', scheduleIds);
 
     if (schError) throw schError;
 
+    const penaltyMap = {};
     const updates = payments.map(payment => {
       const schedule = schedules.find(s => s.id === payment.scheduleId);
       if (!schedule) return null;
 
       const penalty = getPenalty(schedule.scheduled_date, schedule.status);
+      penaltyMap[schedule.id] = penalty;
       const targetAmount = Number(schedule.amount) + penalty;
       const amountToSave = Number(payment.collectedAmount) || 0;
 
@@ -865,6 +972,22 @@ app.post('/api/collections/batch-pay', async (req, res) => {
       )
     );
 
+    // --- SYNC WEEKLY SAVINGS TO member_savings ---
+    const savingCreditedByLoan = {};
+    for (const update of updates) {
+      const sch = schedules.find(s => s.id === update.id);
+      if (!sch || (Number(sch.saving_amount) || 0) <= 0) continue;
+      const prevSavingAmt = Math.min(
+        Number(sch.saving_amount) || 0,
+        Math.max(0, (Number(sch.collected_amount) || 0) - getScheduleSplit(sch).emiAmount - (penaltyMap[sch.id] || 0))
+      );
+      const newSavingTotal = await syncScheduleSaving(sch, update.collected_amount, penaltyMap[sch.id] || 0, staffName || 'Collection RO');
+      const deltaSaving = Math.max(0, newSavingTotal - prevSavingAmt);
+      if (sch.loan_id && deltaSaving > 0) {
+        savingCreditedByLoan[sch.loan_id] = (savingCreditedByLoan[sch.loan_id] || 0) + deltaSaving;
+      }
+    }
+
     // --- CHECK FOR LOAN CLOSURE ---
     // 1. Identify all affected loan IDs
     const affectedLoanIds = [...new Set(schedules.map(s => s.loan_id).filter(id => id != null))];
@@ -885,7 +1008,7 @@ app.post('/api/collections/batch-pay', async (req, res) => {
         const lastOk = (lastSchedule.status === 'Paid' || lastSchedule.status === 'Received');
         const prevOk = previousSchedules.every(s => s.status === 'Received');
         
-        isFullyPaid = lastOk && prevOk;
+        const isFullyPaid = lastOk && prevOk;
         
         if (isFullyPaid) {
           // 3. Update loan status to 'CLOSED'
@@ -942,10 +1065,10 @@ app.post('/api/collections/batch-pay', async (req, res) => {
 
       const paidLoanIds = Object.keys(loanPaymentMap).map(Number);
       if (paidLoanIds.length > 0) {
-        // Fetch loan details and mobile numbers
+        // Fetch loan details and mobile numbers + updated saving balance
         const { data: loansData } = await supabase
           .from('loans')
-          .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, centers(name), members(member_no)')
+          .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, is_saving_plan, total_saving, center_id, centers(name), members(member_no)')
           .in('id', paidLoanIds);
 
         // Fetch all schedules for balance calculation
@@ -972,6 +1095,7 @@ app.post('/api/collections/batch-pay', async (req, res) => {
           const phone2 = loan.nominee_mobile || null;
           if (!phone && !phone2) return;
 
+          const savingCreditedNow = savingCreditedByLoan[loan.id] || 0;
           billsToSend.push({
             phone: phone || phone2,
             phone2: phone ? phone2 : null, // nominee fallback only if primary exists
@@ -981,6 +1105,8 @@ app.post('/api/collections/batch-pay', async (req, res) => {
             date: new Date().toLocaleDateString('en-GB'),
             week: info.weeks.join(', '),
             amountPaid: info.totalPaid,
+            savingCredited: savingCreditedNow > 0 ? savingCreditedNow : null,
+            totalSavingBalance: loan.is_saving_plan ? (Number(loan.total_saving) || 0) : null,
             totalLoan: loan.amount_sanctioned,
             remainingBalance: balanceMap[loan.id] !== undefined ? balanceMap[loan.id] : null
           });
@@ -1126,6 +1252,35 @@ app.get('/api/loans/:loanId/foreclosure-details', async (req, res) => {
 
     const grossSettlementAmount = remainingEMISum + totalPenalty;
 
+    // Fetch member's carry-forward saving balance across all their loans
+    let availableSavingBalance = 0;
+    try {
+      const mKey = loan.member_id || loan.members?.member_no || null;
+      let savRows = [];
+      if (mKey) {
+        const { data: rowsByMember } = await supabase
+          .from('member_savings')
+          .select('transaction_type, amount')
+          .eq('member_id', mKey);
+        savRows = rowsByMember || [];
+      } else {
+        const { data: rowsByLoan } = await supabase
+          .from('member_savings')
+          .select('transaction_type, amount')
+          .eq('loan_id', loanId);
+        savRows = rowsByLoan || [];
+      }
+      let savIn = 0;
+      let savOut = 0;
+      savRows.forEach(r => {
+        if (r.transaction_type === 'WEEKLY_SAVING') savIn += Number(r.amount) || 0;
+        else if (r.transaction_type === 'WITHDRAWAL') savOut += Number(r.amount) || 0;
+      });
+      availableSavingBalance = Math.max(0, savIn - savOut);
+    } catch (savErr) {
+      console.error('Foreclosure saving lookup warning:', savErr.message);
+    }
+
     res.json({
       loan,
       schedules,
@@ -1136,7 +1291,8 @@ app.get('/api/loans/:loanId/foreclosure-details', async (req, res) => {
         totalCollected,
         remainingEMISum,
         totalPenalty,
-        grossSettlementAmount
+        grossSettlementAmount,
+        availableSavingBalance
       }
     });
   } catch (err) {
@@ -1508,7 +1664,7 @@ app.get('/api/pending-settlement/loan/:loanId', async (req, res) => {
 // 3. Process Pending Arrears Settlement (Waterfall Allocation)
 app.post('/api/pending-settlement/pay', async (req, res) => {
   try {
-    const { loanId, amountPaid, waivePenalty, waiverPercentage, selectedScheduleIds, paymentMode, remarks } = req.body;
+    const { loanId, amountPaid, waivePenalty, waiverPercentage, selectedScheduleIds, paymentMode, remarks, staffName } = req.body;
     const today = getTodayIST();
     const paidAmount = Number(amountPaid) || 0;
 
@@ -1519,7 +1675,7 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
     // Fetch loan details
     const { data: loan, error: loanErr } = await supabase
       .from('loans')
-      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, centers(name), members(member_no)')
+      .select('id, member_name, mobile_no, nominee_mobile, amount_sanctioned, is_saving_plan, total_saving, center_id, centers(name), members(member_no)')
       .eq('id', loanId)
       .single();
 
@@ -1584,6 +1740,8 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
 
       updates.push({
         id: sch.id,
+        schedule: sch,
+        appliedPenalty: penalty,
         collected_amount: newCollectedTotal,
         status: newStatus,
         approved_at: new Date().toISOString()
@@ -1603,6 +1761,19 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
           .eq('id', u.id)
       )
     );
+
+    // Sync WEEKLY_SAVING ledger for each settled/partially settled schedule (after-waiver penalty)
+    let savingCreditedTotal = 0;
+    for (const u of updates) {
+      const sch = u.schedule;
+      if ((Number(sch.saving_amount) || 0) <= 0) continue;
+      const prevSavingAmt = Math.min(
+        Number(sch.saving_amount) || 0,
+        Math.max(0, (Number(sch.collected_amount) || 0) - getScheduleSplit(sch).emiAmount - u.appliedPenalty)
+      );
+      const newSavingAmt = await syncScheduleSaving(sch, u.collected_amount, u.appliedPenalty, staffName || 'Collection RO');
+      savingCreditedTotal += Math.max(0, newSavingAmt - prevSavingAmt);
+    }
 
     // Google Sheets Sync: Remove any schedules that turned 'Paid'
     const newlyPaidIds = updates.filter(u => u.status === 'Paid').map(u => u.id);
@@ -1637,7 +1808,7 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
       }
     }
 
-    // Calculate remaining loan balance
+    // Calculate remaining loan balance + latest saving balance
     let remainingLoanBal = 0;
     const { data: freshSchedules } = await supabase
       .from('collection_schedules')
@@ -1650,6 +1821,12 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
         if (d > 0) remainingLoanBal += d;
       }
     });
+
+    const { data: freshLoanSaving } = await supabase
+      .from('loans')
+      .select('total_saving')
+      .eq('id', loanId)
+      .maybeSingle();
 
     // Send WhatsApp settlement receipt
     try {
@@ -1666,6 +1843,8 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
           amountPaid: paidAmount,
           settledWeeks,
           waivedPenalty: waivedPenaltyTotal,
+          savingCredited: savingCreditedTotal > 0 ? savingCreditedTotal : null,
+          totalSavingBalance: loan.is_saving_plan ? (Number(freshLoanSaving?.total_saving) || 0) : null,
           remainingBalance: remainingLoanBal
         });
 
@@ -1683,10 +1862,359 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
       message: 'Pending settlement processed successfully!',
       settledWeeks,
       totalPaid: paidAmount,
+      savingCredited: savingCreditedTotal,
       remainingLoanBalance: remainingLoanBal,
       closedLoan
     });
 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// MEMBER SAVINGS & PASSBOOK ENDPOINTS
+// Constraints: public.member_savings.transaction_type IN ('STP', 'WEEKLY_SAVING', 'WITHDRAWAL')
+// Carry-forward balance across closed/active loans per member.
+// ============================================================
+
+// 1. Search Members & Carry-Forward Saving Balances
+app.get('/api/savings/members', async (req, res) => {
+  try {
+    const { search } = req.query;
+
+    const { data: allLoans, error: loansErr } = await supabase
+      .from('loans')
+      .select('id, member_id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, is_saving_plan, stp_amount, saving_per_week, total_saving, scheme_name, centers(name), members(id, member_no)')
+      .in('status', ['DISBURSED', 'ACTIVE', 'CREDITED', 'SANCTIONED', 'ARCHIVED', 'CLOSED'])
+      .order('id', { ascending: false });
+
+    if (loansErr) throw loansErr;
+
+    let filteredLoans = allLoans || [];
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      const cleanQ = q.replace(/[\s-]/g, '');
+      filteredLoans = filteredLoans.filter(l => {
+        const memNo = l.members?.member_no ? String(l.members.member_no).toLowerCase() : '';
+        const cleanMemNo = memNo.replace(/[\s-]/g, '');
+        return (
+          (l.member_name && l.member_name.toLowerCase().includes(q)) ||
+          (l.member_id && String(l.member_id).toLowerCase().includes(q)) ||
+          (l.members?.id && String(l.members.id).toLowerCase().includes(q)) ||
+          (memNo && (memNo.includes(q) || cleanMemNo.includes(cleanQ))) ||
+          (l.mobile_no && String(l.mobile_no).includes(q)) ||
+          (l.id && String(l.id).includes(q)) ||
+          (l.centers?.name && l.centers.name.toLowerCase().includes(q))
+        );
+      });
+    } else {
+      filteredLoans = filteredLoans.filter(l => l.is_saving_plan || (Number(l.total_saving) || 0) > 0);
+    }
+
+    if (filteredLoans.length === 0) return res.json([]);
+
+    const memberIds = [...new Set(filteredLoans.map(l => l.member_id).filter(Boolean))];
+    const loanIds = filteredLoans.map(l => l.id);
+
+    // Fetch all member_savings transactions for matched members or loans
+    let savQuery = supabase.from('member_savings').select('*');
+    if (memberIds.length > 0 && loanIds.length > 0) {
+      savQuery = savQuery.or(`member_id.in.(${memberIds.join(',')}),loan_id.in.(${loanIds.join(',')})`);
+    } else if (loanIds.length > 0) {
+      savQuery = savQuery.in('loan_id', loanIds);
+    }
+    const { data: allSavings, error: savErr } = await savQuery;
+    if (savErr) throw savErr;
+
+    // Group by member_id (or loan-<id> fallback if member_id is null) for Carry Forward summary
+    const memberMap = {};
+    filteredLoans.forEach(l => {
+      const key = l.member_id ? `m-${l.member_id}` : `l-${l.id}`;
+      if (!memberMap[key]) {
+        memberMap[key] = {
+          memberKey: key,
+          memberId: l.member_id || l.members?.id || null,
+          latestLoanId: l.id,
+          memberName: l.member_name,
+          memberNo: l.members?.member_no || 'N/A',
+          memberPhotoUrl: l.member_photo_url,
+          centerName: l.centers?.name || 'N/A',
+          centerId: l.center_id,
+          mobileNo: l.mobile_no || l.nominee_mobile || '',
+          isSavingPlan: Boolean(l.is_saving_plan),
+          savingPerWeek: Number(l.saving_per_week) || 0,
+          stpAmount: Number(l.stp_amount) || 0,
+          loanIds: [],
+          loans: [],
+          totalWeeklySaving: 0,
+          totalWithdrawn: 0,
+          totalSTP: 0,
+          availableBalance: 0
+        };
+      } else {
+        if (l.is_saving_plan) memberMap[key].isSavingPlan = true;
+        if ((Number(l.saving_per_week) || 0) > memberMap[key].savingPerWeek) {
+          memberMap[key].savingPerWeek = Number(l.saving_per_week) || 0;
+        }
+        if ((Number(l.stp_amount) || 0) > memberMap[key].stpAmount) {
+          memberMap[key].stpAmount = Number(l.stp_amount) || 0;
+        }
+      }
+      memberMap[key].loanIds.push(l.id);
+      memberMap[key].loans.push({
+        id: l.id,
+        status: l.status,
+        amountSanctioned: l.amount_sanctioned,
+        isSavingPlan: Boolean(l.is_saving_plan),
+        savingPerWeek: Number(l.saving_per_week) || 0,
+        stpAmount: Number(l.stp_amount) || 0,
+        totalSaving: Number(l.total_saving) || 0
+      });
+    });
+
+    (allSavings || []).forEach(tx => {
+      const key = tx.member_id ? `m-${tx.member_id}` : `l-${tx.loan_id}`;
+      const m = memberMap[key];
+      if (!m) return;
+      const amt = Number(tx.amount) || 0;
+      if (tx.transaction_type === 'WEEKLY_SAVING') m.totalWeeklySaving += amt;
+      else if (tx.transaction_type === 'WITHDRAWAL') m.totalWithdrawn += amt;
+      else if (tx.transaction_type === 'STP') m.totalSTP += amt;
+    });
+
+    const results = Object.values(memberMap).map(m => ({
+      ...m,
+      availableBalance: Math.max(0, m.totalWeeklySaving - m.totalWithdrawn)
+    }));
+
+    results.sort((a, b) => b.availableBalance - a.availableBalance);
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Full Saving Passbook Ledger for a Member (or Loan)
+app.get('/api/savings/member/:memberKey', async (req, res) => {
+  try {
+    const { memberKey } = req.params;
+    const { loanId } = req.query;
+
+    let loansQuery = supabase
+      .from('loans')
+      .select('id, member_id, member_name, mobile_no, nominee_mobile, amount_sanctioned, center_id, status, member_photo_url, is_saving_plan, stp_amount, saving_per_week, total_saving, scheme_name, created_at, centers(name), members(id, member_no)')
+      .order('id', { ascending: false });
+
+    const numericId = Number(String(memberKey).replace(/^m-|^l-/, ''));
+    if (String(memberKey).startsWith('l-') && !loanId) {
+      loansQuery = loansQuery.eq('id', numericId);
+    } else if (!Number.isNaN(numericId) && numericId > 0) {
+      loansQuery = loansQuery.eq('member_id', numericId);
+    } else if (loanId) {
+      loansQuery = loansQuery.eq('id', Number(loanId));
+    } else {
+      return res.status(400).json({ error: 'Invalid member identifier' });
+    }
+
+    const { data: memberLoans, error: lErr } = await loansQuery;
+    if (lErr) throw lErr;
+    if (!memberLoans || memberLoans.length === 0) {
+      return res.status(404).json({ error: 'Member loans not found' });
+    }
+
+    const loanIds = memberLoans.map(l => l.id);
+    const actualMemberId = memberLoans[0].member_id;
+
+    let txQuery = supabase
+      .from('member_savings')
+      .select('*')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true });
+
+    if (actualMemberId) {
+      txQuery = txQuery.or(`member_id.eq.${actualMemberId},loan_id.in.(${loanIds.join(',')})`);
+    } else {
+      txQuery = txQuery.in('loan_id', loanIds);
+    }
+
+    const { data: rawTx, error: txErr } = await txQuery;
+    if (txErr) throw txErr;
+
+    let runningBalance = 0;
+    let totalWeeklySaving = 0;
+    let totalWithdrawn = 0;
+    let totalSTP = 0;
+
+    const transactions = (rawTx || []).map(tx => {
+      const amt = Number(tx.amount) || 0;
+      if (tx.transaction_type === 'WEEKLY_SAVING') {
+        totalWeeklySaving += amt;
+        runningBalance += amt;
+      } else if (tx.transaction_type === 'WITHDRAWAL') {
+        totalWithdrawn += amt;
+        runningBalance = Math.max(0, runningBalance - amt);
+      } else if (tx.transaction_type === 'STP') {
+        totalSTP += amt;
+      }
+      return {
+        ...tx,
+        runningBalance
+      };
+    });
+
+    res.json({
+      member: {
+        memberId: actualMemberId,
+        memberName: memberLoans[0].member_name,
+        memberNo: memberLoans[0].members?.member_no || 'N/A',
+        memberPhotoUrl: memberLoans[0].member_photo_url,
+        centerName: memberLoans[0].centers?.name || 'N/A',
+        centerId: memberLoans[0].center_id,
+        mobileNo: memberLoans[0].mobile_no || memberLoans[0].nominee_mobile || '',
+        latestLoanId: memberLoans[0].id
+      },
+      loans: memberLoans,
+      summary: {
+        totalWeeklySaving,
+        totalWithdrawn,
+        availableBalance: Math.max(0, totalWeeklySaving - totalWithdrawn),
+        totalSTP
+      },
+      transactions: transactions.reverse() // newest first for display
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Withdraw / Refund Member Saving ('WITHDRAWAL')
+app.post('/api/savings/withdraw', async (req, res) => {
+  try {
+    const { memberId, loanId, amount, notes, staffName } = req.body;
+    const withdrawAmt = Number(amount) || 0;
+
+    if (withdrawAmt <= 0) {
+      return res.status(400).json({ error: 'Withdrawal amount must be greater than zero' });
+    }
+
+    // Fetch member's loans to identify target loan & contact details
+    let loanQuery = supabase
+      .from('loans')
+      .select('id, member_id, member_name, mobile_no, nominee_mobile, center_id, total_saving, centers(name), members(member_no)')
+      .order('id', { ascending: false });
+
+    if (memberId) {
+      loanQuery = loanQuery.eq('member_id', memberId);
+    } else if (loanId) {
+      loanQuery = loanQuery.eq('id', loanId);
+    } else {
+      return res.status(400).json({ error: 'Member ID or Loan ID is required' });
+    }
+
+    const { data: loansList, error: lErr } = await loanQuery;
+    if (lErr || !loansList || loansList.length === 0) {
+      return res.status(404).json({ error: 'Member loan record not found' });
+    }
+
+    const actualMemberId = loansList[0].member_id || memberId || null;
+    const loanIds = loansList.map(l => l.id);
+
+    // Check true live saving balance across carry-forward account
+    let balQuery = supabase.from('member_savings').select('transaction_type, amount');
+    if (actualMemberId) {
+      balQuery = balQuery.or(`member_id.eq.${actualMemberId},loan_id.in.(${loanIds.join(',')})`);
+    } else {
+      balQuery = balQuery.in('loan_id', loanIds);
+    }
+
+    const { data: txRows, error: balErr } = await balQuery;
+    if (balErr) throw balErr;
+
+    let weeklyTotal = 0;
+    let withdrawalTotal = 0;
+    (txRows || []).forEach(r => {
+      const a = Number(r.amount) || 0;
+      if (r.transaction_type === 'WEEKLY_SAVING') weeklyTotal += a;
+      else if (r.transaction_type === 'WITHDRAWAL') withdrawalTotal += a;
+    });
+
+    const availableBalance = Math.max(0, weeklyTotal - withdrawalTotal);
+    if (withdrawAmt > availableBalance) {
+      return res.status(400).json({
+        error: `Insufficient saving balance! Available balance is ₹${availableBalance.toLocaleString('en-IN')}`
+      });
+    }
+
+    // Attach withdrawal to loan with positive saving balance (or specified/latest loan)
+    const targetLoan = (loanId && loansList.find(l => Number(l.id) === Number(loanId))) ||
+      loansList.find(l => (Number(l.total_saving) || 0) > 0) ||
+      loansList[0];
+
+    const { data: inserted, error: insErr } = await supabase
+      .from('member_savings')
+      .insert([{
+        loan_id: targetLoan.id,
+        member_id: actualMemberId,
+        member_name: targetLoan.member_name,
+        center_id: targetLoan.center_id,
+        center_name: targetLoan.centers?.name || '',
+        schedule_id: null,
+        week_number: null,
+        transaction_type: 'WITHDRAWAL',
+        amount: withdrawAmt,
+        notes: notes?.trim() || 'Saving withdrawal / refund to member',
+        created_by: staffName || 'Collection RO'
+      }])
+      .select()
+      .single();
+
+    if (insErr) throw insErr;
+
+    // Deduct from loans.total_saving across member's loans with positive saving
+    let remToDeduct = withdrawAmt;
+    for (const l of loansList) {
+      if (remToDeduct <= 0) break;
+      const curSav = Number(l.total_saving) || 0;
+      if (curSav > 0) {
+        const deductHere = Math.min(curSav, remToDeduct);
+        await supabase.from('loans').update({ total_saving: curSav - deductHere }).eq('id', l.id);
+        remToDeduct -= deductHere;
+      }
+    }
+
+    const newAvailableBalance = Math.max(0, availableBalance - withdrawAmt);
+
+    // Send WhatsApp Saving Withdrawal Receipt
+    try {
+      const primaryPhone = targetLoan.mobile_no;
+      const nomineePhone = targetLoan.nominee_mobile;
+      const phone = primaryPhone || nomineePhone;
+      if (phone) {
+        const msg = whatsappService.generateSavingWithdrawalReceiptText({
+          memberName: targetLoan.member_name,
+          memberNo: targetLoan.members?.member_no || '',
+          centerName: targetLoan.centers?.name || '',
+          date: new Date().toLocaleDateString('en-GB'),
+          withdrawnAmount: withdrawAmt,
+          remainingBalance: newAvailableBalance,
+          notes: notes?.trim() || ''
+        });
+        const res1 = await whatsappService.sendMessage(phone, msg);
+        if (!res1.success && primaryPhone && nomineePhone) {
+          await whatsappService.sendMessage(nomineePhone, msg);
+        }
+      }
+    } catch (waErr) {
+      console.error('[WhatsApp] Withdrawal receipt error:', waErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Saving withdrawal recorded successfully!',
+      transaction: inserted,
+      availableBalance: newAvailableBalance
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
