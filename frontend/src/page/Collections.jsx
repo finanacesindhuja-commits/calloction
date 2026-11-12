@@ -263,6 +263,7 @@ export default function Collections() {
 
     setIsSubmitting(true);
     const paymentsToProcess = [];
+    const manualSavingsToProcess = [];
     const staffName = localStorage.getItem('name') || localStorage.getItem('staffId') || 'Collection RO';
 
     // Collect union of all member IDs that have either EMI or Saving input entered
@@ -276,37 +277,82 @@ export default function Collections() {
        if (amountEntered > 0) {
           const memberId = Number(memberIdStr);
           const member = members.find(m => m.id === memberId);
+          const tInfo = memberTargets[memberId] || { isSavingPlan: false };
           // Get all active schedules that are due on selected date
-           const mSchedules = schedules
-             .filter(s => {
-               const isMatch = (s.loan_id && String(s.loan_id) === String(memberId)) ||
-                 (!s.loan_id && s.member_name && member && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase());
-               const cleanStatus = s.status ? String(s.status).trim() : '';
-               return isMatch && cleanStatus !== 'Paid' && cleanStatus !== 'Received' && cleanStatus !== 'Verified' && s.scheduled_date.split('T')[0].split(' ')[0] === selectedDate;
-             })
-             .sort((a,b) => new Date(a.scheduled_date) - new Date(b.scheduled_date));
-            
-         let remainingToAllocate = amountEntered;
+          const mSchedules = schedules
+            .filter(s => {
+              const isMatch = (s.loan_id && String(s.loan_id) === String(memberId)) ||
+                (!s.loan_id && s.member_name && member && member.member_name && s.member_name.trim().toLowerCase() === member.member_name.trim().toLowerCase());
+              const cleanStatus = s.status ? String(s.status).trim() : '';
+              return isMatch && cleanStatus !== 'Paid' && cleanStatus !== 'Received' && cleanStatus !== 'Verified' && s.scheduled_date.split('T')[0].split(' ')[0] === selectedDate;
+            })
+            .sort((a,b) => new Date(a.scheduled_date) - new Date(b.scheduled_date));
 
-         for (const sch of mSchedules) {
-            if (remainingToAllocate <= 0) break;
-            
-            const target = Number(sch.amount) + (Number(sch.penalty) || 0);
-            const collectedSoFar = Number(sch.collected_amount) || 0;
-            const due = target - collectedSoFar;
-            
-            // Allocate whatever is smaller: remaining cash or schedule's due
-            const toApply = Math.min(remainingToAllocate, due > 0 ? due : remainingToAllocate);
-            paymentsToProcess.push({
-               scheduleId: sch.id,
-               collectedAmount: collectedSoFar + toApply
-            });
-            remainingToAllocate -= toApply;
-         }
+          if (tInfo.isSavingPlan) {
+            // Saving Plan schedules include emi_amount + saving_amount in schedule.amount
+            // Allocate EMI-first across due schedules; any extra beyond schedule due is saved as manual deposit
+            let remainingToAllocate = amountEntered;
+            for (const sch of mSchedules) {
+              if (remainingToAllocate <= 0) break;
+              const target = Number(sch.amount) + (Number(sch.penalty) || 0);
+              const collectedSoFar = Number(sch.collected_amount) || 0;
+              const due = Math.max(0, target - collectedSoFar);
+              if (due <= 0) continue;
+              const toApply = Math.min(remainingToAllocate, due);
+              paymentsToProcess.push({
+                scheduleId: sch.id,
+                collectedAmount: collectedSoFar + toApply
+              });
+              remainingToAllocate -= toApply;
+            }
+            if (remainingToAllocate > 0) {
+              const refSch = mSchedules[0] || null;
+              manualSavingsToProcess.push({
+                loanId: memberId,
+                memberId: member?.member_id || null,
+                memberName: member?.member_name || '',
+                centerId: selectedCenter,
+                scheduleId: refSch?.id || null,
+                weekNumber: refSch?.week_number || null,
+                amount: remainingToAllocate,
+                notes: refSch?.week_number ? `Week ${refSch.week_number} extra manual saving` : 'Extra manual saving deposit'
+              });
+            }
+          } else {
+            // Regular / Non-Saving-Plan member: keep EMI strictly on schedule bills and Saving as separate manual deposit
+            let remainingEmi = emiEntered;
+            for (const sch of mSchedules) {
+              if (remainingEmi <= 0) break;
+              const target = Number(sch.amount) + (Number(sch.penalty) || 0);
+              const collectedSoFar = Number(sch.collected_amount) || 0;
+              const due = Math.max(0, target - collectedSoFar);
+              if (due <= 0) continue;
+              const toApply = Math.min(remainingEmi, due);
+              paymentsToProcess.push({
+                scheduleId: sch.id,
+                collectedAmount: collectedSoFar + toApply
+              });
+              remainingEmi -= toApply;
+            }
+            const manualSavingTotal = savingEntered + remainingEmi;
+            if (manualSavingTotal > 0) {
+              const refSch = mSchedules[0] || null;
+              manualSavingsToProcess.push({
+                loanId: memberId,
+                memberId: member?.member_id || null,
+                memberName: member?.member_name || '',
+                centerId: selectedCenter,
+                scheduleId: refSch?.id || null,
+                weekNumber: refSch?.week_number || null,
+                amount: manualSavingTotal,
+                notes: refSch?.week_number ? `Week ${refSch.week_number} manual saving deposit` : 'Manual saving deposit'
+              });
+            }
+          }
        }
     }
 
-    if (paymentsToProcess.length === 0) {
+    if (paymentsToProcess.length === 0 && manualSavingsToProcess.length === 0) {
       setNotification({ type: 'error', message: 'No payments mapped. Please check the amounts.' });
       setIsSubmitting(false);
       return;
@@ -316,7 +362,7 @@ export default function Collections() {
       const res = await fetch(`${API_URL}/api/collections/batch-pay`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payments: paymentsToProcess, staffName })
+        body: JSON.stringify({ payments: paymentsToProcess, manualSavings: manualSavingsToProcess, staffName })
       });
       if (res.ok) {
         const data = await res.json();
@@ -569,9 +615,7 @@ export default function Collections() {
                                 <span className="md:hidden text-[10px] font-black text-blue-300/60 uppercase tracking-[0.2em]">Manual Deposit</span>
                                 <div className="flex flex-wrap items-center gap-2">
                                   <div className="flex flex-col">
-                                    {targetInfo.isSavingPlan && (
-                                      <span className="text-[9px] font-black text-blue-300/80 uppercase tracking-widest mb-1 pl-1">EMI Amount</span>
-                                    )}
+                                    <span className="text-[9px] font-black text-blue-300/80 uppercase tracking-widest mb-1 pl-1">EMI Amount</span>
                                     <div className="relative w-32 md:w-36">
                                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">₹</span>
                                       <input 
@@ -585,22 +629,22 @@ export default function Collections() {
                                     </div>
                                   </div>
 
-                                  {targetInfo.isSavingPlan && (
-                                    <div className="flex flex-col">
-                                      <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1 pl-1">Saving Amount</span>
-                                      <div className="relative w-28 md:w-32">
-                                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500/70 font-bold">₹</span>
-                                        <input 
-                                          type="number" 
-                                          min="0"
-                                          placeholder={targetInfo.savingDue > 0 ? String(targetInfo.savingDue) : '0'}
-                                          value={savingAmounts[member.id] || ''}
-                                          onChange={(e) => handleSavingChange(member.id, e.target.value)}
-                                          className={`w-full bg-emerald-950/30 border text-emerald-200 rounded-xl py-2.5 pl-8 pr-3 font-mono font-bold focus:outline-none transition-all ${savingAmounts[member.id] ? 'border-emerald-500 shadow-[0_0_15px_-3px_rgba(16,185,129,0.45)]' : 'border-emerald-500/30 focus:border-emerald-400'}`}
-                                        />
-                                      </div>
+                                  <div className="flex flex-col">
+                                    <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1 pl-1">
+                                      {targetInfo.isSavingPlan ? 'Saving Amount' : 'Saving (Manual)'}
+                                    </span>
+                                    <div className="relative w-28 md:w-32">
+                                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500/70 font-bold">₹</span>
+                                      <input 
+                                        type="number" 
+                                        min="0"
+                                        placeholder={targetInfo.savingDue > 0 ? String(targetInfo.savingDue) : '0'}
+                                        value={savingAmounts[member.id] || ''}
+                                        onChange={(e) => handleSavingChange(member.id, e.target.value)}
+                                        className={`w-full bg-emerald-950/30 border text-emerald-200 rounded-xl py-2.5 pl-8 pr-3 font-mono font-bold focus:outline-none transition-all ${savingAmounts[member.id] ? 'border-emerald-500 shadow-[0_0_15px_-3px_rgba(16,185,129,0.45)]' : 'border-emerald-500/30 focus:border-emerald-400'}`}
+                                      />
                                     </div>
-                                  )}
+                                  </div>
 
                                   <button
                                     type="button"
@@ -611,7 +655,7 @@ export default function Collections() {
                                     Full
                                   </button>
                                 </div>
-                                {targetInfo.isSavingPlan && (enteredEmi > 0 || enteredSaving > 0) && (
+                                {(enteredEmi > 0 || enteredSaving > 0) && (
                                   <div className="flex items-center gap-2 text-[10px] font-bold">
                                     <span className="text-slate-400">Row Total: <span className="text-white font-mono">₹{(enteredEmi + enteredSaving).toLocaleString()}</span></span>
                                     {showEmiFirstWarn && (

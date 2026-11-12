@@ -586,8 +586,8 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
         }
       });
 
-      // Calculate Saving portion credited on today's collected schedules
-      let savingCollectedToday = 0;
+      // Calculate Saving portion credited on today's collected schedules + manual savings today
+      let scheduledSavingToday = 0;
       if (todayScheduleIds.length > 0) {
         const { data: todaySavings } = await supabase
           .from('member_savings')
@@ -595,17 +595,37 @@ app.get('/api/stats', cacheMiddleware(15), async (req, res) => {
           .in('schedule_id', todayScheduleIds)
           .eq('transaction_type', 'WEEKLY_SAVING');
         (todaySavings || []).forEach(sv => {
-          savingCollectedToday += Number(sv.amount) || 0;
+          scheduledSavingToday += Number(sv.amount) || 0;
         });
       }
-      const emiCollectedToday = Math.max(0, strictlyCollectedToday - savingCollectedToday);
+
+      let manualSavingToday = 0;
+      let manualSavQuery = supabase
+        .from('member_savings')
+        .select('amount, center_id, created_at')
+        .is('schedule_id', null)
+        .eq('transaction_type', 'WEEKLY_SAVING');
+      if (allowedCenterIds) {
+        manualSavQuery = manualSavQuery.in('center_id', allowedCenterIds);
+      }
+      const { data: manualSavRows } = await manualSavQuery;
+      (manualSavRows || []).forEach(sv => {
+        if (!sv.created_at) return;
+        const istDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(sv.created_at));
+        if (istDate === today) {
+          manualSavingToday += Number(sv.amount) || 0;
+        }
+      });
+
+      const savingCollectedToday = scheduledSavingToday + manualSavingToday;
+      const emiCollectedToday = Math.max(0, strictlyCollectedToday - scheduledSavingToday);
 
       const efficiency = startOfDayTarget > 0 
         ? Math.round((strictlyCollectedToday / startOfDayTarget) * 100) 
         : 0;
 
-      // We override collectedToday to reflect today's actual cash collection for the Sidebar UI
-      let collectedToday = strictlyCollectedToday;
+      // Include manual savings cash collected today alongside EMI + scheduled collections
+      let collectedToday = emiCollectedToday + savingCollectedToday;
 
       // 2. Active Centers Count
       let loanQuery = supabase
@@ -924,17 +944,24 @@ app.post('/api/collections/:id/pay', async (req, res) => {
 // POST: Batch Record Payments for a Center
 app.post('/api/collections/batch-pay', async (req, res) => {
   try {
-    const { payments, staffName } = req.body;
-    if (!payments || !payments.length) return res.status(400).json({ error: 'No payments provided' });
+    const { payments = [], manualSavings = [], staffName } = req.body;
+    const hasPayments = Array.isArray(payments) && payments.length > 0;
+    const hasManualSavings = Array.isArray(manualSavings) && manualSavings.some(m => (Number(m.amount) || 0) > 0);
+    if (!hasPayments && !hasManualSavings) {
+      return res.status(400).json({ error: 'No payments or saving entries provided' });
+    }
 
     // Fetch original schedules to verify target amounts & saving split
-    const scheduleIds = payments.map(p => p.scheduleId);
-    const { data: schedules, error: schError } = await supabase
-      .from('collection_schedules')
-      .select('id, amount, emi_amount, saving_amount, loan_id, member_id, member_name, center_id, center_name, scheduled_date, status, week_number, collected_amount')
-      .in('id', scheduleIds);
-
-    if (schError) throw schError;
+    const scheduleIds = hasPayments ? payments.map(p => p.scheduleId).filter(Boolean) : [];
+    let schedules = [];
+    if (scheduleIds.length > 0) {
+      const { data: schRows, error: schError } = await supabase
+        .from('collection_schedules')
+        .select('id, amount, emi_amount, saving_amount, loan_id, member_id, member_name, center_id, center_name, scheduled_date, status, week_number, collected_amount')
+        .in('id', scheduleIds);
+      if (schError) throw schError;
+      schedules = schRows || [];
+    }
 
     const penaltyMap = {};
     const updates = payments.map(payment => {
@@ -962,15 +989,16 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     }).filter(u => u !== null);
 
     // Using Promise.all since Supabase currently handles bulk updates best via upsert or simple loop
-    // Since we are updating specific rows, simple array mapping with update is fine.
-    const results = await Promise.all(
-      updates.map(update => 
-        supabase.from('collection_schedules')
-          .update(update)
-          .eq('id', update.id)
-          .select()
-      )
-    );
+    if (updates.length > 0) {
+      await Promise.all(
+        updates.map(update =>
+          supabase.from('collection_schedules')
+            .update(update)
+            .eq('id', update.id)
+            .select()
+        )
+      );
+    }
 
     // --- SYNC WEEKLY SAVINGS TO member_savings ---
     const savingCreditedByLoan = {};
@@ -985,6 +1013,51 @@ app.post('/api/collections/batch-pay', async (req, res) => {
       const deltaSaving = Math.max(0, newSavingTotal - prevSavingAmt);
       if (sch.loan_id && deltaSaving > 0) {
         savingCreditedByLoan[sch.loan_id] = (savingCreditedByLoan[sch.loan_id] || 0) + deltaSaving;
+      }
+    }
+
+    // --- RECORD MANUAL / EXTRA SAVINGS FOR ANY MEMBER (regular or extra voluntary deposit) ---
+    const manualSavingLoanIds = [];
+    if (hasManualSavings) {
+      const validManual = manualSavings.filter(ms => (Number(ms.amount) || 0) > 0 && ms.loanId);
+      const lookupIds = [...new Set(validManual.map(ms => Number(ms.loanId)))];
+      const { data: msLoans } = lookupIds.length > 0
+        ? await supabase
+            .from('loans')
+            .select('id, member_id, member_name, center_id, centers(name)')
+            .in('id', lookupIds)
+        : { data: [] };
+      const msLoanMap = {};
+      (msLoans || []).forEach(l => { msLoanMap[l.id] = l; });
+
+      for (const ms of validManual) {
+        const amt = Number(ms.amount) || 0;
+        const lObj = msLoanMap[Number(ms.loanId)];
+        if (!lObj || amt <= 0) continue;
+
+        const { error: msInsErr } = await supabase
+          .from('member_savings')
+          .insert([{
+            loan_id: lObj.id,
+            member_id: lObj.member_id || null,
+            member_name: lObj.member_name || ms.memberName || '',
+            center_id: lObj.center_id || ms.centerId || null,
+            center_name: lObj.centers?.name || '',
+            schedule_id: null,
+            week_number: ms.weekNumber || null,
+            transaction_type: 'WEEKLY_SAVING',
+            amount: amt,
+            notes: ms.notes || (ms.weekNumber ? `Week ${ms.weekNumber} manual saving deposit` : 'Manual saving deposit'),
+            created_by: staffName || 'Collection RO'
+          }]);
+
+        if (!msInsErr) {
+          await recalculateLoanTotalSaving(lObj.id);
+          savingCreditedByLoan[lObj.id] = (savingCreditedByLoan[lObj.id] || 0) + amt;
+          manualSavingLoanIds.push(lObj.id);
+        } else {
+          console.error('[Savings] Manual saving insert error:', msInsErr.message);
+        }
       }
     }
 
@@ -1063,6 +1136,21 @@ app.post('/api/collections/batch-pay', async (req, res) => {
         }
       }
 
+      // Ensure loans that received manual saving also appear in WhatsApp bill map
+      for (const ms of (manualSavings || [])) {
+        const amt = Number(ms.amount) || 0;
+        const lId = Number(ms.loanId);
+        if (amt <= 0 || !lId) continue;
+        if (!loanPaymentMap[lId]) {
+          loanPaymentMap[lId] = {
+            loanId: lId,
+            totalPaid: 0,
+            weeks: ms.weekNumber ? [`Week ${ms.weekNumber}`] : []
+          };
+        }
+        loanPaymentMap[lId].totalPaid += amt;
+      }
+
       const paidLoanIds = Object.keys(loanPaymentMap).map(Number);
       if (paidLoanIds.length > 0) {
         // Fetch loan details and mobile numbers + updated saving balance
@@ -1106,7 +1194,7 @@ app.post('/api/collections/batch-pay', async (req, res) => {
             week: info.weeks.join(', '),
             amountPaid: info.totalPaid,
             savingCredited: savingCreditedNow > 0 ? savingCreditedNow : null,
-            totalSavingBalance: loan.is_saving_plan ? (Number(loan.total_saving) || 0) : null,
+            totalSavingBalance: (loan.is_saving_plan || savingCreditedNow > 0 || (Number(loan.total_saving) || 0) > 0) ? (Number(loan.total_saving) || 0) : null,
             totalLoan: loan.amount_sanctioned,
             remainingBalance: balanceMap[loan.id] !== undefined ? balanceMap[loan.id] : null
           });
@@ -2088,7 +2176,88 @@ app.get('/api/savings/member/:memberKey', async (req, res) => {
   }
 });
 
-// 3. Withdraw / Refund Member Saving ('WITHDRAWAL')
+// 3. Manual Add / Deposit Member Saving ('WEEKLY_SAVING' — respects SQL CHECK constraint)
+app.post('/api/savings/deposit', async (req, res) => {
+  try {
+    const { memberId, loanId, amount, notes, staffName } = req.body;
+    const depositAmt = Number(amount) || 0;
+
+    if (depositAmt <= 0) {
+      return res.status(400).json({ error: 'Saving amount must be greater than zero' });
+    }
+
+    let loanQuery = supabase
+      .from('loans')
+      .select('id, member_id, member_name, mobile_no, nominee_mobile, center_id, total_saving, centers(name), members(member_no)')
+      .order('id', { ascending: false });
+
+    if (memberId) {
+      loanQuery = loanQuery.eq('member_id', memberId);
+    } else if (loanId) {
+      loanQuery = loanQuery.eq('id', loanId);
+    } else {
+      return res.status(400).json({ error: 'Member ID or Loan ID is required' });
+    }
+
+    const { data: loansList, error: lErr } = await loanQuery;
+    if (lErr || !loansList || loansList.length === 0) {
+      return res.status(404).json({ error: 'Member loan record not found' });
+    }
+
+    const actualMemberId = loansList[0].member_id || memberId || null;
+    const loanIds = loansList.map(l => l.id);
+    const targetLoan = (loanId && loansList.find(l => Number(l.id) === Number(loanId))) || loansList[0];
+
+    const { data: inserted, error: insErr } = await supabase
+      .from('member_savings')
+      .insert([{
+        loan_id: targetLoan.id,
+        member_id: actualMemberId,
+        member_name: targetLoan.member_name,
+        center_id: targetLoan.center_id,
+        center_name: targetLoan.centers?.name || '',
+        schedule_id: null,
+        week_number: null,
+        transaction_type: 'WEEKLY_SAVING',
+        amount: depositAmt,
+        notes: notes?.trim() || 'Manual saving deposit',
+        created_by: staffName || 'Collection RO'
+      }])
+      .select()
+      .single();
+
+    if (insErr) throw insErr;
+
+    await recalculateLoanTotalSaving(targetLoan.id);
+
+    let balQuery = supabase.from('member_savings').select('transaction_type, amount');
+    if (actualMemberId) {
+      balQuery = balQuery.or(`member_id.eq.${actualMemberId},loan_id.in.(${loanIds.join(',')})`);
+    } else {
+      balQuery = balQuery.in('loan_id', loanIds);
+    }
+    const { data: txRows } = await balQuery;
+    let weeklyTotal = 0;
+    let withdrawalTotal = 0;
+    (txRows || []).forEach(r => {
+      const a = Number(r.amount) || 0;
+      if (r.transaction_type === 'WEEKLY_SAVING') weeklyTotal += a;
+      else if (r.transaction_type === 'WITHDRAWAL') withdrawalTotal += a;
+    });
+    const newAvailableBalance = Math.max(0, weeklyTotal - withdrawalTotal);
+
+    res.json({
+      success: true,
+      message: `₹${depositAmt.toLocaleString('en-IN')} added to ${targetLoan.member_name}'s savings.`,
+      transaction: inserted,
+      availableBalance: newAvailableBalance
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Withdraw / Refund Member Saving ('WITHDRAWAL')
 app.post('/api/savings/withdraw', async (req, res) => {
   try {
     const { memberId, loanId, amount, notes, staffName } = req.body;

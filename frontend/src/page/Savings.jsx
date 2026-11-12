@@ -15,11 +15,12 @@ export default function Savings() {
   const [passbookData, setPassbookData] = useState(null);
   const [passbookLoading, setPassbookLoading] = useState(false);
 
-  // Withdrawal Form State
-  const [withdrawAmount, setWithdrawAmount] = useState('');
-  const [withdrawLoanId, setWithdrawLoanId] = useState('');
-  const [withdrawNotes, setWithdrawNotes] = useState('');
-  const [submittingWithdraw, setSubmittingWithdraw] = useState(false);
+  // Manual Add Saving & Withdrawal Form State
+  const [actionTab, setActionTab] = useState('deposit'); // 'deposit' | 'withdraw'
+  const [actionAmount, setActionAmount] = useState('');
+  const [actionLoanId, setActionLoanId] = useState('');
+  const [actionNotes, setActionNotes] = useState('');
+  const [submittingAction, setSubmittingAction] = useState(false);
   const [notification, setNotification] = useState(null);
 
   useEffect(() => {
@@ -51,13 +52,14 @@ export default function Savings() {
     }
   };
 
-  const openPassbook = async (memberRow) => {
+  const openPassbook = async (memberRow, defaultTab = 'deposit') => {
     setSelectedMember(memberRow);
     setPassbookData(null);
     setPassbookLoading(true);
-    setWithdrawAmount('');
-    setWithdrawNotes('');
-    setWithdrawLoanId(memberRow.latestLoanId ? String(memberRow.latestLoanId) : '');
+    setActionTab(defaultTab);
+    setActionAmount('');
+    setActionNotes('');
+    setActionLoanId(memberRow.latestLoanId ? String(memberRow.latestLoanId) : '');
 
     try {
       const res = await fetch(`${API_URL}/api/savings/member/${encodeURIComponent(memberRow.memberKey)}`);
@@ -65,7 +67,7 @@ export default function Savings() {
       if (res.ok) {
         setPassbookData(data);
         if (!memberRow.latestLoanId && data.loans?.length > 0) {
-          setWithdrawLoanId(String(data.loans[0].id));
+          setActionLoanId(String(data.loans[0].id));
         }
       }
     } catch (err) {
@@ -75,57 +77,63 @@ export default function Savings() {
     }
   };
 
-  const handleWithdraw = async (e) => {
+  const handleSavingAction = async (e) => {
     e.preventDefault();
     if (!passbookData || !selectedMember) return;
 
-    const amt = Number(withdrawAmount);
+    const amt = Number(actionAmount);
     const available = passbookData.summary?.availableBalance || 0;
     if (!amt || amt <= 0) {
-      setNotification({ type: 'error', message: 'Please enter a valid withdrawal amount.' });
+      setNotification({ type: 'error', message: 'Please enter a valid amount.' });
       return;
     }
-    if (amt > available) {
+
+    if (actionTab === 'withdraw' && amt > available) {
       setNotification({ type: 'error', message: `Withdrawal exceeds available saving balance (₹${available.toLocaleString()}).` });
       return;
     }
 
-    setSubmittingWithdraw(true);
+    setSubmittingAction(true);
     try {
       const staffName = localStorage.getItem('name') || localStorage.getItem('staffId') || 'Collection RO';
-      const res = await fetch(`${API_URL}/api/savings/withdraw`, {
+      const endpoint = actionTab === 'deposit' ? '/api/savings/deposit' : '/api/savings/withdraw';
+      const defaultNote = actionTab === 'deposit' ? 'Manual saving deposit' : 'Saving withdrawal / refund';
+
+      const res = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           memberId: selectedMember.memberId || selectedMember.memberNo,
-          loanId: withdrawLoanId ? Number(withdrawLoanId) : selectedMember.latestLoanId,
+          loanId: actionLoanId ? Number(actionLoanId) : selectedMember.latestLoanId,
           amount: amt,
-          notes: withdrawNotes.trim() || 'Saving withdrawal / refund',
+          notes: actionNotes.trim() || defaultNote,
           staffName
         })
       });
 
       const data = await res.json();
       if (res.ok && data.success) {
+        window.dispatchEvent(new Event('collectionSubmitted'));
         setNotification({
           type: 'success',
-          message: `₹${amt.toLocaleString()} Saving withdrawn for ${selectedMember.memberName}. Remaining Balance: ₹${Number(data.availableBalance).toLocaleString()}`
+          message: actionTab === 'deposit'
+            ? `₹${amt.toLocaleString()} Saving added for ${selectedMember.memberName}. New Balance: ₹${Number(data.availableBalance).toLocaleString()}`
+            : `₹${amt.toLocaleString()} Saving withdrawn for ${selectedMember.memberName}. Remaining Balance: ₹${Number(data.availableBalance).toLocaleString()}`
         });
-        setWithdrawAmount('');
-        setWithdrawNotes('');
-        // Refresh passbook & search list
-        await openPassbook(selectedMember);
+        setActionAmount('');
+        setActionNotes('');
+        await openPassbook(selectedMember, actionTab);
         if (searchTerm.trim()) {
           fetchMembers(searchTerm.trim());
         }
       } else {
-        setNotification({ type: 'error', message: data.error || 'Failed to process saving withdrawal.' });
+        setNotification({ type: 'error', message: data.error || 'Operation failed.' });
       }
     } catch (err) {
-      console.error('Withdraw error:', err);
-      setNotification({ type: 'error', message: 'Network error while processing saving withdrawal.' });
+      console.error('Saving action error:', err);
+      setNotification({ type: 'error', message: 'Network error while updating member savings.' });
     } finally {
-      setSubmittingWithdraw(false);
+      setSubmittingAction(false);
     }
   };
 
@@ -297,10 +305,10 @@ export default function Savings() {
                   ))}
                 </div>
                 <button
-                  onClick={() => openPassbook(m)}
+                  onClick={() => openPassbook(m, 'deposit')}
                   className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg transition-all active:scale-95 shrink-0"
                 >
-                  Passbook / Withdraw
+                  + Add / Passbook
                 </button>
               </div>
             </div>
@@ -372,12 +380,33 @@ export default function Savings() {
                     </div>
                   </div>
 
-                  {/* Withdrawal Form */}
-                  <form onSubmit={handleWithdraw} className="bg-slate-900/80 border border-white/10 rounded-2xl p-5 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-black uppercase tracking-widest text-white">
-                        Withdraw / Refund Saving Balance
-                      </h3>
+                  {/* Manual Add / Withdrawal Form */}
+                  <form onSubmit={handleSavingAction} className="bg-slate-900/80 border border-white/10 rounded-2xl p-5 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="inline-flex bg-[#0a0f1c] p-1 rounded-xl border border-white/10">
+                        <button
+                          type="button"
+                          onClick={() => { setActionTab('deposit'); setActionAmount(''); setActionNotes(''); }}
+                          className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+                            actionTab === 'deposit'
+                              ? 'bg-emerald-600 text-white shadow'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          + Add Saving
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setActionTab('withdraw'); setActionAmount(''); setActionNotes(''); }}
+                          className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+                            actionTab === 'withdraw'
+                              ? 'bg-rose-600 text-white shadow'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          - Withdraw
+                        </button>
+                      </div>
                       <span className="text-[10px] font-bold text-slate-400">
                         Carry-forward balance across closed & active loans
                       </span>
@@ -389,8 +418,8 @@ export default function Savings() {
                           Loan Reference
                         </label>
                         <select
-                          value={withdrawLoanId}
-                          onChange={(e) => setWithdrawLoanId(e.target.value)}
+                          value={actionLoanId}
+                          onChange={(e) => setActionLoanId(e.target.value)}
                           className="w-full bg-[#0a0f1c] border border-white/10 rounded-xl px-3 py-2.5 text-xs font-mono text-white outline-none focus:border-emerald-500"
                         >
                           {(passbookData.loans || []).map((ln) => (
@@ -403,15 +432,15 @@ export default function Savings() {
 
                       <div>
                         <label className="block text-[9px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                          Withdraw Amount (₹)
+                          {actionTab === 'deposit' ? 'Saving Deposit Amount (₹)' : 'Withdraw Amount (₹)'}
                         </label>
                         <input
                           type="number"
                           min="1"
-                          max={passbookData.summary?.availableBalance || 0}
-                          placeholder={`Max ₹${passbookData.summary?.availableBalance || 0}`}
-                          value={withdrawAmount}
-                          onChange={(e) => setWithdrawAmount(e.target.value)}
+                          max={actionTab === 'withdraw' ? (passbookData.summary?.availableBalance || 0) : undefined}
+                          placeholder={actionTab === 'deposit' ? 'e.g., 100' : `Max ₹${passbookData.summary?.availableBalance || 0}`}
+                          value={actionAmount}
+                          onChange={(e) => setActionAmount(e.target.value)}
                           className="w-full bg-[#0a0f1c] border border-white/10 rounded-xl px-3 py-2.5 text-sm font-mono font-bold text-white outline-none focus:border-emerald-500"
                         />
                       </div>
@@ -422,30 +451,47 @@ export default function Savings() {
                         </label>
                         <input
                           type="text"
-                          placeholder="e.g., Full refund on settlement"
-                          value={withdrawNotes}
-                          onChange={(e) => setWithdrawNotes(e.target.value)}
+                          placeholder={actionTab === 'deposit' ? 'e.g., Manual weekly saving' : 'e.g., Full refund on settlement'}
+                          value={actionNotes}
+                          onChange={(e) => setActionNotes(e.target.value)}
                           className="w-full bg-[#0a0f1c] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-emerald-500"
                         />
                       </div>
                     </div>
 
-                    <div className="flex justify-end gap-3">
-                      <button
-                        type="button"
-                        disabled={(passbookData.summary?.availableBalance || 0) <= 0}
-                        onClick={() => setWithdrawAmount(String(passbookData.summary?.availableBalance || 0))}
-                        className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest text-slate-300 border border-white/10 disabled:opacity-40"
-                      >
-                        Withdraw Full (₹{Number(passbookData.summary?.availableBalance || 0).toLocaleString()})
-                      </button>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {actionTab === 'deposit' ? (
+                        [50, 100, 200, 500].map(preset => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setActionAmount(String(preset))}
+                            className="px-3 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-[10px] font-black font-mono text-emerald-300 border border-emerald-500/20"
+                          >
+                            +₹{preset}
+                          </button>
+                        ))
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={(passbookData.summary?.availableBalance || 0) <= 0}
+                          onClick={() => setActionAmount(String(passbookData.summary?.availableBalance || 0))}
+                          className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest text-slate-300 border border-white/10 disabled:opacity-40"
+                        >
+                          Withdraw Full (₹{Number(passbookData.summary?.availableBalance || 0).toLocaleString()})
+                        </button>
+                      )}
                       <button
                         type="submit"
-                        disabled={submittingWithdraw || (passbookData.summary?.availableBalance || 0) <= 0}
-                        className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-black uppercase tracking-widest shadow-lg disabled:opacity-40 flex items-center gap-2"
+                        disabled={submittingAction || (actionTab === 'withdraw' && (passbookData.summary?.availableBalance || 0) <= 0)}
+                        className={`px-6 py-2.5 rounded-xl text-white text-[10px] font-black uppercase tracking-widest shadow-lg disabled:opacity-40 flex items-center gap-2 ${
+                          actionTab === 'deposit'
+                            ? 'bg-emerald-600 hover:bg-emerald-500'
+                            : 'bg-rose-600 hover:bg-rose-500'
+                        }`}
                       >
-                        {submittingWithdraw && <FaSpinner className="animate-spin" />}
-                        Confirm Withdrawal
+                        {submittingAction && <FaSpinner className="animate-spin" />}
+                        {actionTab === 'deposit' ? 'Add Saving Amount' : 'Confirm Withdrawal'}
                       </button>
                     </div>
                   </form>
