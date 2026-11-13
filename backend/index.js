@@ -2817,4 +2817,22 @@ app.listen(PORT, '0.0.0.0', () => {
       console.log(`[WhatsApp Watchdog] Status OK: ${status.status}`);
     }
   }, 10 * 60 * 1000); // Every 10 minutes
+
+  // LAYER 5: Render Free Tier Keep-Alive Self-Pinger
+  // Keeps the Render Free web service awake during collection hours (6:00 AM to 11:00 PM IST)
+  const KEEP_ALIVE_URL = process.env.KEEP_ALIVE_URL || 'https://calloction.onrender.com';
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER || KEEP_ALIVE_URL) {
+    console.log(`[Keep-Alive] Registered self-ping for ${KEEP_ALIVE_URL} every 12 mins`);
+    setInterval(async () => {
+      try {
+        const istHour = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })).getHours();
+        if (istHour >= 6 && istHour <= 23) {
+          const pingRes = await axios.get(`${KEEP_ALIVE_URL}/api/health`, { timeout: 10000 });
+          console.log(`[Keep-Alive] Pinger active: ${KEEP_ALIVE_URL}/api/health (Status ${pingRes.status})`);
+        }
+      } catch (err) {
+        console.log(`[Keep-Alive] Pinger note: ${err.message}`);
+      }
+    }, 12 * 60 * 1000); // Every 12 minutes
+  }
 });

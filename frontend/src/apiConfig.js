@@ -11,15 +11,7 @@ if (typeof window !== 'undefined' && window.location) {
   const host = window.location.hostname;
   
   if (!isNative) {
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host.startsWith('192.168.') ||
-      host.startsWith('10.') ||
-      host.endsWith('.local')
-    ) {
-      API_URL = '';
-    }
+    API_URL = '';
   } else {
     // On native Android/iOS app
     if (!API_URL) {
