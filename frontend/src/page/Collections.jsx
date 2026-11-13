@@ -402,10 +402,18 @@ export default function Collections() {
           }
         });
       } else {
-        setNotification({ type: 'error', message: 'Failed to submit collections' });
+        const errData = await res.json().catch(() => ({}));
+        setNotification({
+          type: 'error',
+          message: errData.error || 'Failed to submit collections. Please try again.'
+        });
       }
     } catch (err) {
       console.error(err);
+      setNotification({
+        type: 'error',
+        message: err.message || 'Network connection error while submitting collections.'
+      });
     } finally {
       setIsSubmitting(false);
     }

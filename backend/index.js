@@ -989,16 +989,16 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     }).filter(u => u !== null);
 
     // Using Promise.all since Supabase currently handles bulk updates best via upsert or simple loop
-    if (updates.length > 0) {
-      await Promise.all(
-        updates.map(update =>
-          supabase.from('collection_schedules')
-            .update(update)
-            .eq('id', update.id)
-            .select()
+    const results = updates.length > 0
+      ? await Promise.all(
+          updates.map(update =>
+            supabase.from('collection_schedules')
+              .update(update)
+              .eq('id', update.id)
+              .select()
+          )
         )
-      );
-    }
+      : [];
 
     // --- SYNC WEEKLY SAVINGS TO member_savings ---
     const savingCreditedByLoan = {};
@@ -1216,7 +1216,7 @@ app.post('/api/collections/batch-pay', async (req, res) => {
 
     res.json({ 
       message: 'Batch payments recorded successfully', 
-      successCount: results.length,
+      successCount: results.length + (manualSavingLoanIds?.length || 0),
       closedLoans 
     });
 
