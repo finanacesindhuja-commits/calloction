@@ -99,9 +99,14 @@ async function syncToGoogleSheets(action, payload) {
   }
 }
 
-// Health Check
+// Health Check (Keep-Alive Target)
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Collection Control Backend is running!' });
+  res.json({
+    status: 'OK',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    message: 'Collection Control Backend is online and awake!'
+  });
 });
 
 // ============================================================
@@ -2823,20 +2828,28 @@ app.listen(PORT, '0.0.0.0', () => {
   }, 10 * 60 * 1000); // Every 10 minutes
 
   // LAYER 5: Render Free Tier Keep-Alive Self-Pinger
-  // Keeps the Render Free web service awake during collection hours (6:00 AM to 11:00 PM IST)
+  // Keeps the Render Free web service permanently awake 24/7 (Never Sleeps, Zero Cold Starts)
   const KEEP_ALIVE_URL = process.env.KEEP_ALIVE_URL || 'https://calloction.onrender.com';
   if (process.env.NODE_ENV === 'production' || process.env.RENDER || KEEP_ALIVE_URL) {
-    console.log(`[Keep-Alive] Registered self-ping for ${KEEP_ALIVE_URL} every 12 mins`);
+    console.log(`[Keep-Alive] Registered active 24/7 self-ping for ${KEEP_ALIVE_URL} every 8 mins (Never Sleep mode)`);
+    // Initial ping 10 seconds after server start
+    setTimeout(async () => {
+      try {
+        const initPing = await axios.get(`${KEEP_ALIVE_URL}/api/health`, { timeout: 10000 });
+        console.log(`[Keep-Alive] Initial startup ping successful (Status ${initPing.status})`);
+      } catch (e) {
+        console.log(`[Keep-Alive] Initial ping note: ${e.message}`);
+      }
+    }, 10000);
+
+    // Continuous 8-minute ping loop (Render sleeps at 15m idle, so 8m guarantees it NEVER sleeps)
     setInterval(async () => {
       try {
-        const istHour = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })).getHours();
-        if (istHour >= 6 && istHour <= 23) {
-          const pingRes = await axios.get(`${KEEP_ALIVE_URL}/api/health`, { timeout: 10000 });
-          console.log(`[Keep-Alive] Pinger active: ${KEEP_ALIVE_URL}/api/health (Status ${pingRes.status})`);
-        }
+        const pingRes = await axios.get(`${KEEP_ALIVE_URL}/api/health`, { timeout: 15000 });
+        console.log(`[Keep-Alive] Keep-alive ping sent: ${KEEP_ALIVE_URL}/api/health (Status ${pingRes.status}, Uptime: ${pingRes.data?.uptime}s)`);
       } catch (err) {
-        console.log(`[Keep-Alive] Pinger note: ${err.message}`);
+        console.log(`[Keep-Alive] Keep-alive note: ${err.message}`);
       }
-    }, 12 * 60 * 1000); // Every 12 minutes
+    }, 8 * 60 * 1000);
   }
 });
