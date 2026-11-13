@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FaUsers, FaSearch, FaCheckCircle, FaExclamationCircle, FaLock, FaCheck, FaTrophy, FaWhatsapp, FaCoins } from 'react-icons/fa';
 import API_URL, { LOAN_APP_URL } from '../apiConfig';
+import SuccessCelebrationModal from '../components/SuccessCelebrationModal';
 
 export default function Collections() {
   const [centers, setCenters] = useState([]);
@@ -367,11 +368,21 @@ export default function Collections() {
       if (res.ok) {
         const data = await res.json();
         
+        const currentCenterName = centers.find(c => String(c.id) === String(selectedCenter))?.name || '';
+        const collectedMembersCount = enteredMemberIds.size;
+
         if (data.closedLoans && data.closedLoans.length > 0) {
           const closedNames = data.closedLoans.map(l => l.member_name).join(', ');
           setNotification({
             type: 'closed',
+            title: 'Loan Fully Settled! 🏆',
             message: `🎉 ${closedNames} — Loan fully settled! Loan Status: CLOSED`,
+            totalAmount: totalDraftCollection,
+            emiAmount: totalDraftEmi,
+            savingAmount: totalDraftSaving,
+            memberCount: collectedMembersCount,
+            centerName: currentCenterName,
+            date: selectedDate,
             action: () => {
               window.dispatchEvent(new Event('collectionSubmitted'));
               setStep(1);
@@ -388,7 +399,14 @@ export default function Collections() {
 
         setNotification({
           type: 'success',
+          title: 'Collections Tallied & Submitted!',
           message: 'Collections tallied and submitted! WhatsApp bills are being sent automatically to all paid members.',
+          totalAmount: totalDraftCollection,
+          emiAmount: totalDraftEmi,
+          savingAmount: totalDraftSaving,
+          memberCount: collectedMembersCount,
+          centerName: currentCenterName,
+          date: selectedDate,
           action: () => {
             window.dispatchEvent(new Event('collectionSubmitted'));
             setStep(1);
@@ -804,75 +822,11 @@ export default function Collections() {
           <p className="text-white/30 max-w-sm mx-auto">Select a collection date and active center to begin inputting cash counts.</p>
         </div>
       )}
-      {/* Custom premium modal notification instead of browser alert */}
-      {notification && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
-          <div className={`border rounded-[2rem] p-8 max-w-md w-full shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-300 ${
-            notification.type === 'closed'
-              ? 'bg-[#1a1200] border-yellow-500/30'
-              : 'bg-[#0f172a] border-white/10'
-          }`}>
-            {/* Top color highlight line */}
-            <div className={`absolute top-0 left-0 w-full h-1.5 ${
-              notification.type === 'success' ? 'bg-gradient-to-r from-emerald-500 to-teal-500' :
-              notification.type === 'closed'  ? 'bg-gradient-to-r from-yellow-400 to-amber-500' :
-              notification.type === 'error'   ? 'bg-gradient-to-r from-red-500 to-rose-500' :
-              'bg-gradient-to-r from-blue-500 to-indigo-500'
-            }`}></div>
-
-            <div className="text-center mt-4">
-              <div className={`mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-6 shadow-inner ${
-                notification.type === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
-                notification.type === 'closed'  ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/30' :
-                notification.type === 'error'   ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
-                'bg-blue-500/10 text-blue-400 border border-blue-500/20'
-              }`}>
-                {notification.type === 'success' && <FaCheckCircle size={32} />}
-                {notification.type === 'closed'  && <FaTrophy size={32} />}
-                {notification.type === 'error'   && <FaExclamationCircle size={32} />}
-                {notification.type === 'info'    && <FaCheckCircle size={32} />}
-              </div>
-
-              <h3 className={`text-xl font-bold mb-3 tracking-tight ${
-                notification.type === 'closed' ? 'text-yellow-400' : 'text-white'
-              }`}>
-                {notification.type === 'success' ? 'Success' :
-                 notification.type === 'closed'  ? 'Loan Closed! 🏆' :
-                 notification.type === 'error'   ? 'Oops!' :
-                 'Notice'}
-              </h3>
-
-              {notification.type === 'closed' && (
-                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-2xl px-4 py-2 mb-4 inline-block">
-                  <span className="text-yellow-400 text-xs font-black uppercase tracking-widest">Status: CLOSED ✓</span>
-                </div>
-              )}
-              
-              <p className={`text-sm leading-relaxed mb-8 ${
-                notification.type === 'closed' ? 'text-yellow-200/70' : 'text-slate-400'
-              }`}>
-                {notification.message}
-              </p>
-
-              <button
-                onClick={() => {
-                  const action = notification.action;
-                  setNotification(null);
-                  if (action) action();
-                }}
-                className={`w-full py-4 rounded-xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 shadow-lg ${
-                  notification.type === 'success' ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-900 shadow-emerald-500/10' :
-                  notification.type === 'closed'  ? 'bg-yellow-500 hover:bg-yellow-400 text-slate-900 shadow-yellow-500/20' :
-                  notification.type === 'error'   ? 'bg-red-500 hover:bg-red-400 text-slate-900 shadow-red-500/10' :
-                  'bg-blue-500 hover:bg-blue-400 text-slate-900 shadow-blue-500/10'
-                }`}
-              >
-                {notification.type === 'closed' ? '✓ Okay, Noted' : 'Okay'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Custom premium celebration modal notification */}
+      <SuccessCelebrationModal
+        notification={notification}
+        onClose={() => setNotification(null)}
+      />
     </div>
   );
 }

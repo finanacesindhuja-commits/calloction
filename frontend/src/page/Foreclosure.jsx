@@ -5,6 +5,7 @@ import {
   FaUserCheck, FaInfoCircle, FaTimes, FaShieldAlt, FaPhoneAlt, FaHistory, FaReceipt
 } from 'react-icons/fa';
 import API_URL, { LOAN_APP_URL } from '../apiConfig';
+import SuccessCelebrationModal from '../components/SuccessCelebrationModal';
 
 export default function Foreclosure() {
   const staffId = localStorage.getItem('staffId');
@@ -673,45 +674,11 @@ export default function Foreclosure() {
       )}
 
       {/* Notification Modal */}
-      {notification && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-[#0f172a] border border-white/10 rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl relative text-center animate-in zoom-in-95 duration-200">
-            <div className={`mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-inner ${
-              notification.type === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
-            }`}>
-              {notification.type === 'success' ? <FaCheckCircle size={32} /> : <FaExclamationCircle size={32} />}
-            </div>
-
-            <h3 className="text-xl font-bold text-white mb-2">
-              {notification.title || (notification.type === 'success' ? 'Success' : 'Error')}
-            </h3>
-            <p className="text-slate-400 text-xs leading-relaxed mb-6">
-              {notification.message}
-            </p>
-
-            <div className="flex gap-2">
-              {notification.action && (
-                <button
-                  onClick={() => {
-                    const action = notification.action;
-                    setNotification(null);
-                    action();
-                  }}
-                  className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs uppercase tracking-wider transition-all"
-                >
-                  {notification.actionBtn || 'Proceed'}
-                </button>
-              )}
-              <button
-                onClick={() => setNotification(null)}
-                className="flex-1 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-black text-xs uppercase tracking-wider transition-all"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Custom celebration modal notification */}
+      <SuccessCelebrationModal
+        notification={notification}
+        onClose={() => setNotification(null)}
+      />
     </div>
   );
 }
