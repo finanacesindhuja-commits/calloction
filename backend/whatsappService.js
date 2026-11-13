@@ -1,4 +1,5 @@
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
+const { createClient } = require('@supabase/supabase-js');
 const QRCode = require('qrcode');
 const pino = require('pino');
 const path = require('path');
@@ -14,6 +15,163 @@ class WhatsAppService {
     this.connectedUser = null;
     this.isInitializing = false;
     this.keepAliveTimer = null;
+    this.supabase = null;
+    this.supabaseBucket = 'whatsapp-auth';
+    this.pendingUploads = new Set();
+    this.pendingDeletes = new Set();
+    this.syncTimer = null;
+    this.cloudRestored = false;
+  }
+
+  initSupabase() {
+    if (this.supabase) return this.supabase;
+    const url = process.env.SUPABASE_URL?.trim();
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    if (url && key) {
+      try {
+        this.supabase = createClient(url, key);
+      } catch (e) {
+        console.error('[WhatsApp] Failed to init Supabase client:', e.message);
+      }
+    }
+    return this.supabase;
+  }
+
+  async ensureBucketExists() {
+    if (!this.initSupabase()) return;
+    try {
+      const { data: buckets, error } = await this.supabase.storage.listBuckets();
+      if (!error && !buckets?.some(b => b.name === this.supabaseBucket)) {
+        await this.supabase.storage.createBucket(this.supabaseBucket, { public: false });
+        console.log(`[WhatsApp] Created Supabase Storage bucket "${this.supabaseBucket}".`);
+      }
+    } catch (e) {
+      // Ignore if already exists
+    }
+  }
+
+  async downloadAuthFromSupabase() {
+    if (!this.initSupabase()) return false;
+    try {
+      if (!fs.existsSync(AUTH_FOLDER)) {
+        fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+      }
+
+      console.log('[WhatsApp] Checking Supabase cloud storage for saved session...');
+      let offset = 0;
+      const allFiles = [];
+
+      while (true) {
+        const { data: files, error } = await this.supabase.storage
+          .from(this.supabaseBucket)
+          .list('', { limit: 100, offset });
+
+        if (error || !files || files.length === 0) break;
+        allFiles.push(...files);
+        if (files.length < 100) break;
+        offset += files.length;
+      }
+
+      if (allFiles.length === 0) {
+        console.log('[WhatsApp] No existing session found in Supabase cloud storage.');
+        // If local creds exist, sync them to Supabase to initialize cloud backup
+        if (fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'))) {
+          const localFiles = fs.readdirSync(AUTH_FOLDER);
+          console.log(`[WhatsApp] Uploading ${localFiles.length} local session files to Supabase...`);
+          for (const f of localFiles) {
+            await this.uploadFileToSupabase(f);
+          }
+        }
+        return false;
+      }
+
+      console.log(`[WhatsApp] Restoring ${allFiles.length} session files from Supabase cloud...`);
+      let restoredCount = 0;
+      await Promise.all(
+        allFiles.map(async (file) => {
+          if (!file.name) return;
+          try {
+            const { data, error } = await this.supabase.storage
+              .from(this.supabaseBucket)
+              .download(file.name);
+            if (data && !error) {
+              const buffer = Buffer.from(await data.arrayBuffer());
+              fs.writeFileSync(path.join(AUTH_FOLDER, file.name), buffer);
+              restoredCount++;
+            }
+          } catch (dlErr) {
+            console.error(`[WhatsApp] Failed to download ${file.name}:`, dlErr.message);
+          }
+        })
+      );
+
+      this.cloudRestored = fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'));
+      console.log(`[WhatsApp] Cloud session restore complete (${restoredCount} files). Has creds: ${this.cloudRestored}`);
+      return this.cloudRestored;
+    } catch (err) {
+      console.error('[WhatsApp] Failed to sync session from Supabase cloud:', err.message);
+      return false;
+    }
+  }
+
+  async uploadFileToSupabase(fileName) {
+    if (!this.initSupabase()) return;
+    try {
+      const filePath = path.join(AUTH_FOLDER, fileName);
+      if (!fs.existsSync(filePath)) return;
+      const content = fs.readFileSync(filePath);
+      await this.supabase.storage
+        .from(this.supabaseBucket)
+        .upload(fileName, content, {
+          contentType: 'application/json',
+          upsert: true
+        });
+    } catch (e) {
+      console.error(`[WhatsApp] Failed to upload ${fileName} to Supabase:`, e.message);
+    }
+  }
+
+  queueSync(fileName, isDelete = false) {
+    if (!fileName) return;
+    if (isDelete) {
+      this.pendingUploads.delete(fileName);
+      this.pendingDeletes.add(fileName);
+    } else {
+      this.pendingDeletes.delete(fileName);
+      this.pendingUploads.add(fileName);
+    }
+
+    if (this.syncTimer) {
+      clearTimeout(this.syncTimer);
+    }
+
+    this.syncTimer = setTimeout(() => {
+      this.flushSyncQueue();
+    }, 1500);
+  }
+
+  async flushSyncQueue() {
+    if (!this.initSupabase()) return;
+    const toUpload = Array.from(this.pendingUploads);
+    const toDelete = Array.from(this.pendingDeletes);
+    this.pendingUploads.clear();
+    this.pendingDeletes.clear();
+
+    if (toDelete.length > 0) {
+      try {
+        await this.supabase.storage.from(this.supabaseBucket).remove(toDelete);
+      } catch (err) {
+        console.error('[WhatsApp] Error deleting keys from Supabase:', err.message);
+      }
+    }
+
+    if (toUpload.length > 0) {
+      try {
+        await Promise.all(toUpload.map(f => this.uploadFileToSupabase(f)));
+      } catch (err) {
+        console.error('[WhatsApp] Error syncing keys to Supabase:', err.message);
+      }
+    }
   }
 
   startKeepAlive() {
@@ -46,6 +204,10 @@ class WhatsAppService {
         fs.mkdirSync(AUTH_FOLDER, { recursive: true });
       }
 
+      // Step 1: Sync existing session files from Supabase cloud storage (Render-safe)
+      await this.ensureBucketExists();
+      await this.downloadAuthFromSupabase();
+
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
       const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307], isLatest: true }));
 
@@ -65,7 +227,25 @@ class WhatsAppService {
         retryRequestDelayMs: 2000,
       });
 
-      this.sock.ev.on('creds.update', saveCreds);
+      // Hook credentials save to automatically upload creds.json to Supabase
+      const enhancedSaveCreds = async () => {
+        await saveCreds();
+        await this.uploadFileToSupabase('creds.json');
+      };
+      this.sock.ev.on('creds.update', enhancedSaveCreds);
+
+      // Hook keys.set to automatically queue uploads/deletions to Supabase cloud
+      const originalKeysSet = state.keys.set;
+      state.keys.set = async (data) => {
+        await originalKeysSet(data);
+        for (const category in data) {
+          for (const id in data[category]) {
+            const value = data[category][id];
+            const fileName = `${category}-${id}.json`.replace(/\//g, '__').replace(/:/g, '-');
+            this.queueSync(fileName, !value);
+          }
+        }
+      };
 
       this.sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -91,6 +271,11 @@ class WhatsAppService {
           };
           console.log(`[WhatsApp] Connected successfully as ${this.connectedUser.phone} (${this.connectedUser.name})!`);
           this.startKeepAlive();
+          // Ensure all local session files are backed up to Supabase
+          if (fs.existsSync(AUTH_FOLDER)) {
+            const files = fs.readdirSync(AUTH_FOLDER);
+            files.forEach(f => this.queueSync(f, false));
+          }
         }
 
         if (connection === 'close') {
@@ -103,7 +288,7 @@ class WhatsAppService {
 
           if (statusCode === DisconnectReason.loggedOut) {
             console.log('[WhatsApp] Logged out from device. Cleaning credentials...');
-            this.resetAuth();
+            await this.resetAuth();
           }
 
           if (shouldReconnect) {
@@ -126,15 +311,36 @@ class WhatsAppService {
     }
   }
 
-  resetAuth() {
+  async resetAuth() {
     try {
       this.connectedUser = null;
       this.qrCodeDataUrl = null;
       this.connectionStatus = 'DISCONNECTED';
+      this.cloudRestored = false;
+      
+      // Wipe local auth files
       if (fs.existsSync(AUTH_FOLDER)) {
         fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
       }
+
+      // Wipe Supabase cloud session files
+      if (this.initSupabase()) {
+        try {
+          const { data: files } = await this.supabase.storage
+            .from(this.supabaseBucket)
+            .list('', { limit: 500 });
+          if (files && files.length > 0) {
+            const names = files.map(f => f.name).filter(Boolean);
+            await this.supabase.storage.from(this.supabaseBucket).remove(names);
+            console.log(`[WhatsApp] Cleared ${names.length} session files from Supabase cloud storage.`);
+          }
+        } catch (e) {
+          console.error('[WhatsApp] Error clearing Supabase session files:', e.message);
+        }
+      }
+
       setTimeout(() => {
+        this.isInitializing = false;
         this.init();
       }, 1000);
     } catch (e) {
@@ -349,7 +555,9 @@ class WhatsAppService {
       status: this.connectionStatus,
       isConnected: this.connectionStatus === 'CONNECTED',
       qrCode: this.qrCodeDataUrl,
-      user: this.connectedUser
+      user: this.connectedUser,
+      cloudSynced: this.cloudRestored || this.connectionStatus === 'CONNECTED',
+      cloudBucket: this.supabaseBucket
     };
   }
 }

@@ -180,8 +180,12 @@ app.get('/whatsapp', (req, res) => {
         <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
       </div>
       <h3 class="text-lg font-bold text-white mb-1">WhatsApp Connected Successfully!</h3>
-      <p id="connectedUser" class="text-xs text-emerald-400 font-mono font-bold mb-6">+91 XXXXXXXXXX</p>
+      <p id="connectedUser" class="text-xs text-emerald-400 font-mono font-bold mb-4">+91 XXXXXXXXXX</p>
       
+      <div id="cloudBadge" class="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-[11px] font-semibold mb-5">
+        <span>☁️</span> Supabase Cloud Session: Auto-Saved (Render restart safe)
+      </div>
+
       <p class="text-xs text-slate-400 bg-slate-800/40 p-3 rounded-xl border border-white/5 mb-6 leading-relaxed">
         When the RO submits the collection bill, automatic WhatsApp receipts will be sent from this number to paid members.
       </p>
