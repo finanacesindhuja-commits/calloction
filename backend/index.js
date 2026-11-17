@@ -287,9 +287,6 @@ app.get('/whatsapp', (req, res) => {
       await fetch('/api/whatsapp/logout', { method: 'POST' });
       location.reload();
     }
-      await fetch('/api/whatsapp/logout', { method: 'POST' });
-      location.reload();
-    }
 
     setInterval(checkStatus, 3000);
     checkStatus();
