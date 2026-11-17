@@ -1,7 +1,11 @@
 {
   "rewrites": [
     {
-      "source": "/((?!api|assets|favicon.ico|vite.svg).*)",
+      "source": "/api/(.*)",
+      "destination": "https://calloction.onrender.com/api/$1"
+    },
+    {
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ]
