@@ -4,8 +4,10 @@ const QRCode = require('qrcode');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
+const zlib = require('zlib');
 
 const AUTH_FOLDER = path.join(__dirname, 'auth_info_baileys');
+const SESSION_BUNDLE_FILE = 'session_bundle.json.gz';
 
 class WhatsAppService {
   constructor() {
@@ -17,9 +19,8 @@ class WhatsAppService {
     this.keepAliveTimer = null;
     this.supabase = null;
     this.supabaseBucket = 'whatsapp-auth';
-    this.pendingUploads = new Set();
-    this.pendingDeletes = new Set();
     this.syncTimer = null;
+    this.isSyncing = false;
     this.cloudRestored = false;
   }
 
@@ -58,9 +59,41 @@ class WhatsAppService {
       }
 
       console.log('[WhatsApp] Checking Supabase cloud storage for saved session...');
+
+      // 1. First priority: Check and download single compressed session bundle (1 request!)
+      try {
+        const { data, error } = await this.supabase.storage
+          .from(this.supabaseBucket)
+          .download(SESSION_BUNDLE_FILE);
+
+        if (data && !error) {
+          const buffer = Buffer.from(await data.arrayBuffer());
+          const decompressed = zlib.gunzipSync(buffer).toString('utf8');
+          const bundle = JSON.parse(decompressed);
+          let restoredCount = 0;
+          for (const [file, content] of Object.entries(bundle)) {
+            fs.writeFileSync(path.join(AUTH_FOLDER, file), content, 'utf8');
+            restoredCount++;
+          }
+          this.cloudRestored = fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'));
+          console.log(`[WhatsApp] Restored session bundle (${restoredCount} files, ${Math.round(buffer.length / 1024)} KB) from Supabase cloud. Has creds: ${this.cloudRestored}`);
+          return this.cloudRestored;
+        }
+      } catch (bundleErr) {
+        // Bundle not found or error, continue to check fallbacks
+      }
+
+      // 2. If local session already exists, save it to the cloud bundle right now
+      if (fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'))) {
+        console.log('[WhatsApp] Local creds found. Initializing cloud session bundle...');
+        await this.saveSessionToSupabase();
+        this.cloudRestored = true;
+        return true;
+      }
+
+      // 3. Legacy migration: check if older individual files exist in Supabase storage
       let offset = 0;
       const allFiles = [];
-
       while (true) {
         const { data: files, error } = await this.supabase.storage
           .from(this.supabaseBucket)
@@ -72,41 +105,40 @@ class WhatsAppService {
         offset += files.length;
       }
 
-      if (allFiles.length === 0) {
+      const individualFiles = allFiles.filter(f => f.name && f.name.endsWith('.json') && f.name !== SESSION_BUNDLE_FILE);
+      if (individualFiles.length === 0) {
         console.log('[WhatsApp] No existing session found in Supabase cloud storage.');
-        // If local creds exist, sync them to Supabase to initialize cloud backup
-        if (fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'))) {
-          const localFiles = fs.readdirSync(AUTH_FOLDER);
-          console.log(`[WhatsApp] Uploading ${localFiles.length} local session files to Supabase...`);
-          for (const f of localFiles) {
-            await this.uploadFileToSupabase(f);
-          }
-        }
         return false;
       }
 
-      console.log(`[WhatsApp] Restoring ${allFiles.length} session files from Supabase cloud...`);
-      let restoredCount = 0;
-      await Promise.all(
-        allFiles.map(async (file) => {
-          if (!file.name) return;
-          try {
-            const { data, error } = await this.supabase.storage
-              .from(this.supabaseBucket)
-              .download(file.name);
-            if (data && !error) {
-              const buffer = Buffer.from(await data.arrayBuffer());
-              fs.writeFileSync(path.join(AUTH_FOLDER, file.name), buffer);
-              restoredCount++;
-            }
-          } catch (dlErr) {
-            console.error(`[WhatsApp] Failed to download ${file.name}:`, dlErr.message);
-          }
-        })
-      );
+      console.log(`[WhatsApp] Migrating ${individualFiles.length} legacy session files from Supabase cloud...`);
+      // Download legacy files in small controlled batches of 15 to prevent Supabase 544 Database Timeout
+      const batchSize = 15;
+      for (let i = 0; i < individualFiles.length; i += batchSize) {
+        const batch = individualFiles.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (file) => {
+            try {
+              const { data, error } = await this.supabase.storage
+                .from(this.supabaseBucket)
+                .download(file.name);
+              if (data && !error) {
+                const buffer = Buffer.from(await data.arrayBuffer());
+                fs.writeFileSync(path.join(AUTH_FOLDER, file.name), buffer);
+              }
+            } catch (dlErr) {}
+          })
+        );
+      }
 
       this.cloudRestored = fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'));
-      console.log(`[WhatsApp] Cloud session restore complete (${restoredCount} files). Has creds: ${this.cloudRestored}`);
+      if (this.cloudRestored) {
+        console.log('[WhatsApp] Legacy files migrated successfully. Creating compressed cloud bundle...');
+        await this.saveSessionToSupabase();
+        // Clean up legacy files from cloud storage in background
+        this.cleanupLegacyCloudFiles(individualFiles.map(f => f.name));
+      }
+
       return this.cloudRestored;
     } catch (err) {
       console.error('[WhatsApp] Failed to sync session from Supabase cloud:', err.message);
@@ -114,63 +146,67 @@ class WhatsAppService {
     }
   }
 
-  async uploadFileToSupabase(fileName) {
+  async saveSessionToSupabase() {
     if (!this.initSupabase()) return;
+    if (!fs.existsSync(AUTH_FOLDER) || !fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'))) {
+      return;
+    }
+    if (this.isSyncing) return;
+    this.isSyncing = true;
+
     try {
-      const filePath = path.join(AUTH_FOLDER, fileName);
-      if (!fs.existsSync(filePath)) return;
-      const content = fs.readFileSync(filePath);
-      await this.supabase.storage
+      const files = fs.readdirSync(AUTH_FOLDER);
+      const bundle = {};
+      for (const f of files) {
+        if (f.endsWith('.json')) {
+          bundle[f] = fs.readFileSync(path.join(AUTH_FOLDER, f), 'utf8');
+        }
+      }
+      const count = Object.keys(bundle).length;
+      if (count === 0) return;
+
+      const compressed = zlib.gzipSync(Buffer.from(JSON.stringify(bundle)));
+      const { error } = await this.supabase.storage
         .from(this.supabaseBucket)
-        .upload(fileName, content, {
-          contentType: 'application/json',
+        .upload(SESSION_BUNDLE_FILE, compressed, {
+          contentType: 'application/gzip',
           upsert: true
         });
-    } catch (e) {
-      console.error(`[WhatsApp] Failed to upload ${fileName} to Supabase:`, e.message);
+
+      if (error) {
+        console.error('[WhatsApp] Failed to upload session bundle:', error.message);
+      } else {
+        console.log(`[WhatsApp] Backed up session bundle (${count} files, ${Math.round(compressed.length / 1024)} KB) to Supabase cloud.`);
+      }
+    } catch (err) {
+      console.error('[WhatsApp] Error saving session bundle to Supabase:', err.message);
+    } finally {
+      this.isSyncing = false;
     }
   }
 
-  queueSync(fileName, isDelete = false) {
-    if (!fileName) return;
-    if (isDelete) {
-      this.pendingUploads.delete(fileName);
-      this.pendingDeletes.add(fileName);
-    } else {
-      this.pendingDeletes.delete(fileName);
-      this.pendingUploads.add(fileName);
-    }
-
+  triggerSessionSync(delayMs = 3000) {
     if (this.syncTimer) {
       clearTimeout(this.syncTimer);
     }
-
     this.syncTimer = setTimeout(() => {
-      this.flushSyncQueue();
-    }, 1500);
+      this.saveSessionToSupabase().catch(err => {
+        console.error('[WhatsApp] Debounced sync error:', err.message);
+      });
+    }, delayMs);
   }
 
-  async flushSyncQueue() {
-    if (!this.initSupabase()) return;
-    const toUpload = Array.from(this.pendingUploads);
-    const toDelete = Array.from(this.pendingDeletes);
-    this.pendingUploads.clear();
-    this.pendingDeletes.clear();
-
-    if (toDelete.length > 0) {
-      try {
-        await this.supabase.storage.from(this.supabaseBucket).remove(toDelete);
-      } catch (err) {
-        console.error('[WhatsApp] Error deleting keys from Supabase:', err.message);
+  async cleanupLegacyCloudFiles(fileNames) {
+    if (!this.initSupabase() || !fileNames || fileNames.length === 0) return;
+    try {
+      const batchSize = 50;
+      for (let i = 0; i < fileNames.length; i += batchSize) {
+        const batch = fileNames.slice(i, i + batchSize);
+        await this.supabase.storage.from(this.supabaseBucket).remove(batch);
       }
-    }
-
-    if (toUpload.length > 0) {
-      try {
-        await Promise.all(toUpload.map(f => this.uploadFileToSupabase(f)));
-      } catch (err) {
-        console.error('[WhatsApp] Error syncing keys to Supabase:', err.message);
-      }
+      console.log(`[WhatsApp] Cleaned up ${fileNames.length} legacy files from Supabase storage.`);
+    } catch (e) {
+      // Ignore background cleanup errors
     }
   }
 
@@ -229,28 +265,22 @@ class WhatsAppService {
         retryRequestDelayMs: 2000,
       });
 
-      // Hook credentials save to automatically upload creds.json to Supabase
+      // Hook credentials save to automatically trigger debounced session backup
       const enhancedSaveCreds = async () => {
         try {
           await saveCreds();
-          await this.uploadFileToSupabase('creds.json');
+          this.triggerSessionSync(2000);
         } catch (err) {
           console.error('[WhatsApp] Save creds error:', err.message);
         }
       };
       this.sock.ev.on('creds.update', enhancedSaveCreds);
 
-      // Hook keys.set to automatically queue uploads/deletions to Supabase cloud
+      // Hook keys.set to automatically trigger debounced session backup
       const originalKeysSet = state.keys.set;
       state.keys.set = async (data) => {
         await originalKeysSet(data);
-        for (const category in data) {
-          for (const id in data[category]) {
-            const value = data[category][id];
-            const fileName = `${category}-${id}.json`.replace(/\//g, '__').replace(/:/g, '-');
-            this.queueSync(fileName, !value);
-          }
-        }
+        this.triggerSessionSync(3500);
       };
 
       this.sock.ev.on('connection.update', async (update) => {
@@ -277,14 +307,8 @@ class WhatsAppService {
           };
           console.log(`[WhatsApp] Connected successfully as ${this.connectedUser.phone} (${this.connectedUser.name})!`);
           this.startKeepAlive();
-          // Ensure all local session files are backed up to Supabase
-          if (fs.existsSync(AUTH_FOLDER)) {
-            const files = fs.readdirSync(AUTH_FOLDER);
-            for (const f of files) {
-              await this.uploadFileToSupabase(f);
-            }
-            console.log(`[WhatsApp] Backed up ${files.length} auth files to Supabase cloud.`);
-          }
+          // Backup session bundle to Supabase cloud (1 single quick upload)
+          this.triggerSessionSync(1000);
         }
 
         if (connection === 'close') {
@@ -329,6 +353,11 @@ class WhatsAppService {
       this.connectionStatus = 'DISCONNECTED';
       this.cloudRestored = false;
 
+      if (this.syncTimer) {
+        clearTimeout(this.syncTimer);
+        this.syncTimer = null;
+      }
+
       if (this.sock) {
         try {
           this.sock.end(undefined);
@@ -341,17 +370,18 @@ class WhatsAppService {
         fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
       }
 
-      // Wipe Supabase cloud session files
+      // Wipe Supabase cloud session bundle and legacy files
       if (this.initSupabase()) {
         try {
+          await this.supabase.storage.from(this.supabaseBucket).remove([SESSION_BUNDLE_FILE]);
           const { data: files } = await this.supabase.storage
             .from(this.supabaseBucket)
-            .list('', { limit: 500 });
+            .list('', { limit: 1000 });
           if (files && files.length > 0) {
             const names = files.map(f => f.name).filter(Boolean);
             await this.supabase.storage.from(this.supabaseBucket).remove(names);
-            console.log(`[WhatsApp] Cleared ${names.length} session files from Supabase cloud storage.`);
           }
+          console.log('[WhatsApp] Cleared session files from Supabase cloud storage.');
         } catch (e) {
           console.error('[WhatsApp] Error clearing Supabase session files:', e.message);
         }
