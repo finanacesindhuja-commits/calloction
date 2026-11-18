@@ -209,7 +209,7 @@ class WhatsAppService {
       await this.downloadAuthFromSupabase();
 
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-      const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307], isLatest: true }));
+      const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760], isLatest: true }));
 
       console.log(`[WhatsApp] Initializing Baileys engine (v${version.join('.')}, isLatest: ${isLatest})...`);
 
@@ -221,6 +221,8 @@ class WhatsAppService {
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         browser: Browsers.ubuntu('Chrome'),
+        syncFullHistory: false,
+        markOnlineOnConnect: true,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 25000,
@@ -229,8 +231,12 @@ class WhatsAppService {
 
       // Hook credentials save to automatically upload creds.json to Supabase
       const enhancedSaveCreds = async () => {
-        await saveCreds();
-        await this.uploadFileToSupabase('creds.json');
+        try {
+          await saveCreds();
+          await this.uploadFileToSupabase('creds.json');
+        } catch (err) {
+          console.error('[WhatsApp] Save creds error:', err.message);
+        }
       };
       this.sock.ev.on('creds.update', enhancedSaveCreds);
 
@@ -274,30 +280,35 @@ class WhatsAppService {
           // Ensure all local session files are backed up to Supabase
           if (fs.existsSync(AUTH_FOLDER)) {
             const files = fs.readdirSync(AUTH_FOLDER);
-            files.forEach(f => this.queueSync(f, false));
+            for (const f of files) {
+              await this.uploadFileToSupabase(f);
+            }
+            console.log(`[WhatsApp] Backed up ${files.length} auth files to Supabase cloud.`);
           }
         }
 
         if (connection === 'close') {
           this.stopKeepAlive();
           const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           
           this.connectionStatus = 'DISCONNECTED';
-          console.log(`[WhatsApp] Connection closed. StatusCode: ${statusCode}. Reconnecting: ${shouldReconnect}`);
+          console.log(`[WhatsApp] Connection closed. StatusCode: ${statusCode}. LoggedOut: ${isLoggedOut}`);
 
-          if (statusCode === DisconnectReason.loggedOut) {
-            console.log('[WhatsApp] Logged out from device. Cleaning credentials...');
-            await this.resetAuth();
-          }
-
-          if (shouldReconnect) {
+          if (isLoggedOut) {
+            console.log('[WhatsApp] Device logged out from WhatsApp. Cleaning credentials...');
+            await this.resetAuth(false);
+            setTimeout(() => {
+              this.isInitializing = false;
+              this.init();
+            }, 1500);
+          } else {
+            // Reconnect WITHOUT wiping credentials (vital for QR scan handshake & 515 restart!)
+            console.log('[WhatsApp] Reconnecting with saved credentials in 3 seconds...');
             setTimeout(() => {
               this.isInitializing = false;
               this.init();
             }, 3000);
-          } else {
-            this.isInitializing = false;
           }
         }
       });
@@ -311,13 +322,20 @@ class WhatsAppService {
     }
   }
 
-  async resetAuth() {
+  async resetAuth(triggerInit = true) {
     try {
       this.connectedUser = null;
       this.qrCodeDataUrl = null;
       this.connectionStatus = 'DISCONNECTED';
       this.cloudRestored = false;
-      
+
+      if (this.sock) {
+        try {
+          this.sock.end(undefined);
+        } catch (e) {}
+        this.sock = null;
+      }
+
       // Wipe local auth files
       if (fs.existsSync(AUTH_FOLDER)) {
         fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
@@ -339,10 +357,12 @@ class WhatsAppService {
         }
       }
 
-      setTimeout(() => {
-        this.isInitializing = false;
-        this.init();
-      }, 1000);
+      if (triggerInit) {
+        setTimeout(() => {
+          this.isInitializing = false;
+          this.init();
+        }, 1000);
+      }
     } catch (e) {
       console.error('[WhatsApp] Error resetting auth:', e.message);
     }
