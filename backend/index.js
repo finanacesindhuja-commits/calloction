@@ -2808,8 +2808,8 @@ cron.schedule('0 18 * * *', async () => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Collection Control Backend running on port ${PORT}`);
 
-  // LAYER 1: Heal everything on server startup
-  autoHealAll('startup');
+  // LAYER 1: Startup initialization (heal deferred to prevent database lockup)
+  console.log(`[Startup] Server initialized. AutoHeal scheduled for midnight.`);
 
   // LAYER 2: Daily automatic heal — runs every 24 hours at midnight
   const msUntilMidnight = () => {
@@ -2841,7 +2841,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.error('[WhatsApp] Failed to start WhatsApp engine:', err.message);
   });
 
-  // WhatsApp Watchdog: Check every 10 minutes — auto-reinitialize if disconnected
+  // WhatsApp Watchdog: Check every 1 minute — auto-reinitialize if disconnected
   setInterval(() => {
     const status = whatsappService.getStatus();
     if (status.status === 'DISCONNECTED') {
@@ -2849,10 +2849,8 @@ app.listen(PORT, '0.0.0.0', () => {
       whatsappService.init().catch(err => {
         console.error('[WhatsApp Watchdog] Reconnect failed:', err.message);
       });
-    } else {
-      console.log(`[WhatsApp Watchdog] Status OK: ${status.status}`);
     }
-  }, 10 * 60 * 1000); // Every 10 minutes
+  }, 60 * 1000); // Every 1 minute
 
   // LAYER 5: Render Free Tier Keep-Alive Self-Pinger
   // Keeps the Render Free web service permanently awake 24/7 (Never Sleeps, Zero Cold Starts)
