@@ -911,13 +911,13 @@ app.post('/api/collections/:id/pay', async (req, res) => {
       }
     }
 
-    // Google Sheets Sync: Remove specific schedule row when paid
+    // Google Sheets Sync: Remove specific schedule row when paid (Non-blocking background sync)
     if (['Paid', 'Received', 'Verified'].includes(newStatus)) {
-      await syncToGoogleSheets('REMOVE_PAID', { 
+      syncToGoogleSheets('REMOVE_PAID', { 
         scheduleIds: [String(id), Number(id)],
         scheduleId: String(id),
         ids: [String(id), Number(id)]
-      });
+      }).catch(err => console.error('[Google Sheets] Async single pay remove error:', err.message));
     }
 
     // --- DISPATCH WHATSAPP RECEIPT FOR SINGLE PAYMENT ---
@@ -1143,11 +1143,11 @@ app.post('/api/collections/batch-pay', async (req, res) => {
     if (paidScheduleIds.length > 0) {
       const strIds = paidScheduleIds.map(id => String(id));
       const numIds = paidScheduleIds.map(id => Number(id));
-      await syncToGoogleSheets('REMOVE_PAID', { 
+      syncToGoogleSheets('REMOVE_PAID', { 
         scheduleIds: [...strIds, ...numIds],
         scheduleId: strIds[0],
         ids: [...strIds, ...numIds]
-      });
+      }).catch(err => console.error('[Google Sheets] Async batch pay remove error:', err.message));
     }
 
     // --- AUTOMATIC WHATSAPP BILL DISPATCH TO ALL PAID MEMBERS ---
@@ -1479,42 +1479,44 @@ app.post('/api/loans/:loanId/foreclose', async (req, res) => {
 
     if (closeErr) throw closeErr;
 
-    // Google Sheets Sync: Remove any pending rows for these schedules
+    // Google Sheets Sync: Remove any pending rows for these schedules (Async background)
     if (scheduleIds.length > 0) {
       const strIds = scheduleIds.map(id => String(id));
       const numIds = scheduleIds.map(id => Number(id));
-      await syncToGoogleSheets('REMOVE_PAID', {
+      syncToGoogleSheets('REMOVE_PAID', {
         scheduleIds: [...strIds, ...numIds],
         scheduleId: strIds[0],
         ids: [...strIds, ...numIds]
-      });
+      }).catch(err => console.error('[Google Sheets] Async foreclosure remove error:', err.message));
     }
 
-    // Send WhatsApp Foreclosure Receipt (NOC)
-    try {
-      const primaryPhone = loan.mobile_no;
-      const nomineePhone = loan.nominee_mobile;
-      const phone = primaryPhone || nomineePhone;
+    // Send WhatsApp Foreclosure Receipt (NOC) in background
+    (async () => {
+      try {
+        const primaryPhone = loan.mobile_no;
+        const nomineePhone = loan.nominee_mobile;
+        const phone = primaryPhone || nomineePhone;
 
-      if (phone) {
-        const receiptText = whatsappService.generateForeclosureReceiptText({
-          memberName: loan.member_name,
-          memberNo: loan.members?.member_no || '',
-          centerName: loan.centers?.name || '',
-          date: new Date().toLocaleDateString('en-GB'),
-          settlementAmount: settlementAmount || 0,
-          discountAmount: discountAmount || 0,
-          totalLoan: loan.amount_sanctioned
-        });
+        if (phone) {
+          const receiptText = whatsappService.generateForeclosureReceiptText({
+            memberName: loan.member_name,
+            memberNo: loan.members?.member_no || '',
+            centerName: loan.centers?.name || '',
+            date: new Date().toLocaleDateString('en-GB'),
+            settlementAmount: settlementAmount || 0,
+            discountAmount: discountAmount || 0,
+            totalLoan: loan.amount_sanctioned
+          });
 
-        const res1 = await whatsappService.sendMessage(phone, receiptText);
-        if (!res1.success && primaryPhone && nomineePhone) {
-          await whatsappService.sendMessage(nomineePhone, receiptText);
+          const res1 = await whatsappService.sendMessage(phone, receiptText);
+          if (!res1.success && primaryPhone && nomineePhone) {
+            await whatsappService.sendMessage(nomineePhone, receiptText);
+          }
         }
+      } catch (waErr) {
+        console.error('[WhatsApp] Foreclosure message error:', waErr.message);
       }
-    } catch (waErr) {
-      console.error('[WhatsApp] Foreclosure message error:', waErr.message);
-    }
+    })();
 
     res.json({
       success: true,
@@ -1899,16 +1901,16 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
       savingCreditedTotal += Math.max(0, newSavingAmt - prevSavingAmt);
     }
 
-    // Google Sheets Sync: Remove any schedules that turned 'Paid'
+    // Google Sheets Sync: Remove any schedules that turned 'Paid' (Async background)
     const newlyPaidIds = updates.filter(u => u.status === 'Paid').map(u => u.id);
     if (newlyPaidIds.length > 0) {
       const strIds = newlyPaidIds.map(id => String(id));
       const numIds = newlyPaidIds.map(id => Number(id));
-      await syncToGoogleSheets('REMOVE_PAID', {
+      syncToGoogleSheets('REMOVE_PAID', {
         scheduleIds: [...strIds, ...numIds],
         scheduleId: strIds[0],
         ids: [...strIds, ...numIds]
-      });
+      }).catch(err => console.error('[Google Sheets] Async settlement remove error:', err.message));
     }
 
     // Check if entire loan is now fully cleared / closed
@@ -1952,34 +1954,36 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
       .eq('id', loanId)
       .maybeSingle();
 
-    // Send WhatsApp settlement receipt
-    try {
-      const primaryPhone = loan.mobile_no;
-      const nomineePhone = loan.nominee_mobile;
-      const phone = primaryPhone || nomineePhone;
+    // Send WhatsApp settlement receipt in background
+    (async () => {
+      try {
+        const primaryPhone = loan.mobile_no;
+        const nomineePhone = loan.nominee_mobile;
+        const phone = primaryPhone || nomineePhone;
 
-      if (phone) {
-        const receiptText = whatsappService.generatePendingSettlementReceiptText({
-          memberName: loan.member_name,
-          memberNo: loan.members?.member_no || '',
-          centerName: loan.centers?.name || '',
-          date: new Date().toLocaleDateString('en-GB'),
-          amountPaid: paidAmount,
-          settledWeeks,
-          waivedPenalty: waivedPenaltyTotal,
-          savingCredited: savingCreditedTotal > 0 ? savingCreditedTotal : null,
-          totalSavingBalance: loan.is_saving_plan ? (Number(freshLoanSaving?.total_saving) || 0) : null,
-          remainingBalance: remainingLoanBal
-        });
+        if (phone) {
+          const receiptText = whatsappService.generatePendingSettlementReceiptText({
+            memberName: loan.member_name,
+            memberNo: loan.members?.member_no || '',
+            centerName: loan.centers?.name || '',
+            date: new Date().toLocaleDateString('en-GB'),
+            amountPaid: paidAmount,
+            settledWeeks,
+            waivedPenalty: waivedPenaltyTotal,
+            savingCredited: savingCreditedTotal > 0 ? savingCreditedTotal : null,
+            totalSavingBalance: loan.is_saving_plan ? (Number(freshLoanSaving?.total_saving) || 0) : null,
+            remainingBalance: remainingLoanBal
+          });
 
-        const res1 = await whatsappService.sendMessage(phone, receiptText);
-        if (!res1.success && primaryPhone && nomineePhone) {
-          await whatsappService.sendMessage(nomineePhone, receiptText);
+          const res1 = await whatsappService.sendMessage(phone, receiptText);
+          if (!res1.success && primaryPhone && nomineePhone) {
+            await whatsappService.sendMessage(nomineePhone, receiptText);
+          }
         }
+      } catch (waErr) {
+        console.error('[WhatsApp] Settlement receipt error:', waErr.message);
       }
-    } catch (waErr) {
-      console.error('[WhatsApp] Settlement receipt error:', waErr.message);
-    }
+    })();
 
     res.json({
       success: true,
@@ -2390,29 +2394,31 @@ app.post('/api/savings/withdraw', async (req, res) => {
 
     const newAvailableBalance = Math.max(0, availableBalance - withdrawAmt);
 
-    // Send WhatsApp Saving Withdrawal Receipt
-    try {
-      const primaryPhone = targetLoan.mobile_no;
-      const nomineePhone = targetLoan.nominee_mobile;
-      const phone = primaryPhone || nomineePhone;
-      if (phone) {
-        const msg = whatsappService.generateSavingWithdrawalReceiptText({
-          memberName: targetLoan.member_name,
-          memberNo: targetLoan.members?.member_no || '',
-          centerName: targetLoan.centers?.name || '',
-          date: new Date().toLocaleDateString('en-GB'),
-          withdrawnAmount: withdrawAmt,
-          remainingBalance: newAvailableBalance,
-          notes: notes?.trim() || ''
-        });
-        const res1 = await whatsappService.sendMessage(phone, msg);
-        if (!res1.success && primaryPhone && nomineePhone) {
-          await whatsappService.sendMessage(nomineePhone, msg);
+    // Send WhatsApp Saving Withdrawal Receipt (Async background)
+    (async () => {
+      try {
+        const primaryPhone = targetLoan.mobile_no;
+        const nomineePhone = targetLoan.nominee_mobile;
+        const phone = primaryPhone || nomineePhone;
+        if (phone) {
+          const msg = whatsappService.generateSavingWithdrawalReceiptText({
+            memberName: targetLoan.member_name,
+            memberNo: targetLoan.members?.member_no || '',
+            centerName: targetLoan.centers?.name || '',
+            date: new Date().toLocaleDateString('en-GB'),
+            withdrawnAmount: withdrawAmt,
+            remainingBalance: newAvailableBalance,
+            notes: notes?.trim() || ''
+          });
+          const res1 = await whatsappService.sendMessage(phone, msg);
+          if (!res1.success && primaryPhone && nomineePhone) {
+            await whatsappService.sendMessage(nomineePhone, msg);
+          }
         }
+      } catch (waErr) {
+        console.error('[WhatsApp] Withdrawal receipt error:', waErr.message);
       }
-    } catch (waErr) {
-      console.error('[WhatsApp] Withdrawal receipt error:', waErr.message);
-    }
+    })();
 
     res.json({
       success: true,

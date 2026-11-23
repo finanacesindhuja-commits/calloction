@@ -212,7 +212,7 @@ class WhatsAppService {
 
   startKeepAlive() {
     this.stopKeepAlive();
-    // Send presence ping every 25 seconds to prevent NAT/router/idle disconnects
+    // Conservative presence ping every 60 seconds (prevents idle timeouts without triggering spam resets)
     this.keepAliveTimer = setInterval(async () => {
       if (this.connectionStatus === 'CONNECTED' && this.sock) {
         try {
@@ -221,7 +221,7 @@ class WhatsAppService {
           // Silent ignore ping errors
         }
       }
-    }, 25000);
+    }, 60000);
   }
 
   stopKeepAlive() {
@@ -236,13 +236,29 @@ class WhatsAppService {
     this.isInitializing = true;
 
     try {
+      // 1. Clean up any existing socket & listeners to prevent duplicate/ghost sockets (fixes 440 Connection Replaced)
+      if (this.sock) {
+        try {
+          this.sock.ev.removeAllListeners();
+          this.sock.end(undefined);
+        } catch (e) {}
+        this.sock = null;
+      }
+
       if (!fs.existsSync(AUTH_FOLDER)) {
         fs.mkdirSync(AUTH_FOLDER, { recursive: true });
       }
 
-      // Step 1: Sync existing session files from Supabase cloud storage (Render-safe)
-      await this.ensureBucketExists();
-      await this.downloadAuthFromSupabase();
+      // 2. Only restore from Supabase cloud if NO local session exists on disk
+      // (CRUCIAL: Prevents overwriting newest active cryptographic keys with stale cloud snapshots on reconnect!)
+      const hasLocalCreds = fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'));
+      if (!hasLocalCreds) {
+        console.log('[WhatsApp] No local session on disk. Checking Supabase cloud storage for saved session bundle...');
+        await this.ensureBucketExists();
+        await this.downloadAuthFromSupabase();
+      } else {
+        console.log('[WhatsApp] Active local session found on disk. Preserving local encryption keys.');
+      }
 
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
       const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760], isLatest: true }));
@@ -256,13 +272,13 @@ class WhatsAppService {
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        browser: Browsers.ubuntu('Chrome'),
+        browser: Browsers.macOS('Desktop'),
         syncFullHistory: false,
         markOnlineOnConnect: true,
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 25000,
-        retryRequestDelayMs: 2000,
+        connectTimeoutMs: 30000,
+        defaultQueryTimeoutMs: 25000,
+        keepAliveIntervalMs: 30000,
+        retryRequestDelayMs: 1500,
       });
 
       // Hook credentials save to automatically trigger debounced session backup
@@ -307,7 +323,7 @@ class WhatsAppService {
           };
           console.log(`[WhatsApp] Connected successfully as ${this.connectedUser.phone} (${this.connectedUser.name})!`);
           this.startKeepAlive();
-          // Backup session bundle to Supabase cloud (1 single quick upload)
+          // Backup session bundle to Supabase cloud
           this.triggerSessionSync(1000);
         }
 
@@ -326,13 +342,27 @@ class WhatsAppService {
               this.isInitializing = false;
               this.init();
             }, 1500);
-          } else {
-            // Reconnect WITHOUT wiping credentials (vital for QR scan handshake & 515 restart!)
-            console.log('[WhatsApp] Reconnecting with saved credentials in 3 seconds...');
+          } else if (statusCode === 515) {
+            // Code 515 = restartRequired (stream restart required after QR pairing) - reconnect immediately
+            console.log('[WhatsApp] Stream restart required (code 515). Reconnecting in 500ms...');
             setTimeout(() => {
               this.isInitializing = false;
               this.init();
-            }, 3000);
+            }, 500);
+          } else if (statusCode === 440) {
+            // Code 440 = connectionReplaced - wait 4 seconds before reconnecting
+            console.log('[WhatsApp] Connection replaced (code 440). Waiting 4s before reconnecting...');
+            setTimeout(() => {
+              this.isInitializing = false;
+              this.init();
+            }, 4000);
+          } else {
+            // Normal network drop / timeout - reconnect in 2.5 seconds
+            console.log('[WhatsApp] Reconnecting with saved credentials in 2.5 seconds...');
+            setTimeout(() => {
+              this.isInitializing = false;
+              this.init();
+            }, 2500);
           }
         }
       });
@@ -417,12 +447,17 @@ class WhatsAppService {
     }
 
     if (this.connectionStatus !== 'CONNECTED' || !this.sock) {
-      return { success: false, error: 'WhatsApp is not connected. Status: ' + this.connectionStatus };
+      return { success: false, error: 'WhatsApp is not connected (status: ' + this.connectionStatus + ')' };
     }
 
     try {
       const jid = `${formattedPhone}@s.whatsapp.net`;
-      const result = await this.sock.sendMessage(jid, { text });
+      // Protect with a strict 10-second timeout so message sending never blocks server threads
+      const sendPromise = this.sock.sendMessage(jid, { text });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('WhatsApp send timeout (10s)')), 10000)
+      );
+      const result = await Promise.race([sendPromise, timeoutPromise]);
       return { success: true, messageId: result?.key?.id };
     } catch (err) {
       console.error(`[WhatsApp] Error sending to ${formattedPhone}:`, err.message);
