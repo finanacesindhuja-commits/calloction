@@ -84,19 +84,32 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // Google Sheets Sync Helper
 async function syncToGoogleSheets(action, payload) {
   const url = process.env.GOOGLE_SHEET_WEBAPP_URL || 'https://script.google.com/macros/s/AKfycbwSah3tejW0xTkCIdKoPBllvan3dvzkxmA9Q3XdlcBWnd5TQa15AmU6_rPf7dW9qy0R/exec';
-  if (!url) return null;
+  if (!url) return { ok: false, error: 'Missing GOOGLE_SHEET_WEBAPP_URL' };
   try {
     const data = { action, ...payload };
     const response = await axios.post(url, data, {
       headers: { 'Content-Type': 'application/json' },
-      timeout: 15000
+      timeout: 60000
     });
     console.log(`[Google Sheets Sync] ${action} Success:`, response.data);
-    return response.data;
+    return { ok: true, data: response.data };
   } catch (error) {
     console.error(`[Google Sheets Sync] Error (${action}): ${error.message}`);
-    return null;
+    return { ok: false, error: error.message };
   }
+}
+
+function removePaidFromGoogleSheets(scheduleIds, contextLabel = 'payment') {
+  if (!Array.isArray(scheduleIds) || scheduleIds.length === 0) return;
+  const uniqueIds = [...new Set(scheduleIds.filter(id => id !== null && id !== undefined && id !== ''))];
+  if (uniqueIds.length === 0) return;
+  const strIds = uniqueIds.map(id => String(id));
+  const numIds = uniqueIds.map(id => Number(id)).filter(n => !Number.isNaN(n));
+  syncToGoogleSheets('REMOVE_PAID', {
+    scheduleIds: [...strIds, ...numIds],
+    scheduleId: strIds[0],
+    ids: [...strIds, ...numIds]
+  }).catch(err => console.error(`[Google Sheets] Async ${contextLabel} remove error:`, err.message));
 }
 
 // Health Check (Keep-Alive Target)
@@ -911,13 +924,9 @@ app.post('/api/collections/:id/pay', async (req, res) => {
       }
     }
 
-    // Google Sheets Sync: Remove specific schedule row when paid (Non-blocking background sync)
-    if (['Paid', 'Received', 'Verified'].includes(newStatus)) {
-      syncToGoogleSheets('REMOVE_PAID', { 
-        scheduleIds: [String(id), Number(id)],
-        scheduleId: String(id),
-        ids: [String(id), Number(id)]
-      }).catch(err => console.error('[Google Sheets] Async single pay remove error:', err.message));
+    // Google Sheets Sync: Remove specific schedule row when paid or base bill is fully collected
+    if (['Paid', 'Received', 'Verified'].includes(newStatus) || amountToSave >= (Number(schedule.amount) || 0)) {
+      removePaidFromGoogleSheets([id], 'single pay');
     }
 
     // --- DISPATCH WHATSAPP RECEIPT FOR SINGLE PAYMENT ---
@@ -1135,19 +1144,16 @@ app.post('/api/collections/batch-pay', async (req, res) => {
       }
     }
 
-    // Google Sheets Sync: Remove specific schedule rows when paid
+    // Google Sheets Sync: Remove specific schedule rows when paid or base bill is fully collected
     const paidScheduleIds = updates
-      .filter(u => ['Paid', 'Received', 'Verified'].includes(u.status))
+      .filter(u => {
+        const sch = schedules.find(s => s.id === u.id);
+        return ['Paid', 'Received', 'Verified'].includes(u.status) || u.collected_amount >= (Number(sch?.amount) || 0);
+      })
       .map(u => u.id);
 
     if (paidScheduleIds.length > 0) {
-      const strIds = paidScheduleIds.map(id => String(id));
-      const numIds = paidScheduleIds.map(id => Number(id));
-      syncToGoogleSheets('REMOVE_PAID', { 
-        scheduleIds: [...strIds, ...numIds],
-        scheduleId: strIds[0],
-        ids: [...strIds, ...numIds]
-      }).catch(err => console.error('[Google Sheets] Async batch pay remove error:', err.message));
+      removePaidFromGoogleSheets(paidScheduleIds, 'batch pay');
     }
 
     // --- AUTOMATIC WHATSAPP BILL DISPATCH TO ALL PAID MEMBERS ---
@@ -1481,13 +1487,7 @@ app.post('/api/loans/:loanId/foreclose', async (req, res) => {
 
     // Google Sheets Sync: Remove any pending rows for these schedules (Async background)
     if (scheduleIds.length > 0) {
-      const strIds = scheduleIds.map(id => String(id));
-      const numIds = scheduleIds.map(id => Number(id));
-      syncToGoogleSheets('REMOVE_PAID', {
-        scheduleIds: [...strIds, ...numIds],
-        scheduleId: strIds[0],
-        ids: [...strIds, ...numIds]
-      }).catch(err => console.error('[Google Sheets] Async foreclosure remove error:', err.message));
+      removePaidFromGoogleSheets(scheduleIds, 'foreclosure');
     }
 
     // Send WhatsApp Foreclosure Receipt (NOC) in background
@@ -1901,16 +1901,12 @@ app.post('/api/pending-settlement/pay', async (req, res) => {
       savingCreditedTotal += Math.max(0, newSavingAmt - prevSavingAmt);
     }
 
-    // Google Sheets Sync: Remove any schedules that turned 'Paid' (Async background)
-    const newlyPaidIds = updates.filter(u => u.status === 'Paid').map(u => u.id);
+    // Google Sheets Sync: Remove any schedules that turned 'Paid' or fully collected base amount
+    const newlyPaidIds = updates
+      .filter(u => ['Paid', 'Received', 'Verified'].includes(u.status) || u.collected_amount >= (Number(u.schedule?.amount) || 0))
+      .map(u => u.id);
     if (newlyPaidIds.length > 0) {
-      const strIds = newlyPaidIds.map(id => String(id));
-      const numIds = newlyPaidIds.map(id => Number(id));
-      syncToGoogleSheets('REMOVE_PAID', {
-        scheduleIds: [...strIds, ...numIds],
-        scheduleId: strIds[0],
-        ids: [...strIds, ...numIds]
-      }).catch(err => console.error('[Google Sheets] Async settlement remove error:', err.message));
+      removePaidFromGoogleSheets(newlyPaidIds, 'settlement');
     }
 
     // Check if entire loan is now fully cleared / closed
@@ -2628,8 +2624,9 @@ async function autoHealAll(trigger = 'manual') {
 }
 
 // Helper function to sync current pending collections to Google Sheets
-// Helper function to sync current pending collections to Google Sheets
 const SYNC_STATE_FILE = path.join(__dirname, 'last_sync_date.json');
+let isGoogleSheetsSyncRunning = false;
+let lastGoogleSheetsSyncAt = 0;
 
 function getLastSyncDate() {
   try {
@@ -2649,42 +2646,69 @@ function setLastSyncDate(dateStr) {
   }
 }
 
-async function syncAllPendingToGoogleSheets() {
-  console.log('[Google Sheets Sync] Starting full pending sync...');
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
-  
-  const { data: schedules, error: schError } = await supabase
-    .from('collection_schedules')
-    .select('id, amount, status, collected_amount, scheduled_date, member_id, loan_id, center_id, center_name, member_name')
-    .lte('scheduled_date', today)
-    .not('status', 'in', '("Paid","Received","Verified")')
-    .order('scheduled_date', { ascending: true });
-    
-  if (schError) throw schError;
-  if (!schedules || schedules.length === 0) {
-    console.log('[Google Sheets Sync] No pending schedules found.');
-    await syncToGoogleSheets('ADD_PENDING', { records: [] });
-    setLastSyncDate(today);
-    return { syncedCount: 0 };
+async function syncAllPendingToGoogleSheets({ force = false } = {}) {
+  if (isGoogleSheetsSyncRunning) {
+    console.log('[Google Sheets Sync] Sync already in progress — skipping duplicate trigger.');
+    return { syncedCount: 0, skipped: true, reason: 'Sync already in progress' };
   }
-  
-  // 1. Fetch centers for name lookup fallback
-  const { data: centers } = await supabase.from('centers').select('id, name');
-  const centerMap = {};
-  if (centers) {
-    centers.forEach(c => centerMap[c.id] = c.name);
+  if (!force && Date.now() - lastGoogleSheetsSyncAt < 90 * 1000) {
+    console.log('[Google Sheets Sync] Sync just completed recently — skipping duplicate trigger.');
+    return { syncedCount: 0, skipped: true, reason: 'Recently synced' };
   }
 
-  // 2. Fetch associated loans for member_no and mobile numbers (by ID + Name fallback)
-  const { data: loans } = await supabase
-    .from('loans')
-    .select('id, member_name, mobile_no, nominee_mobile, members(member_no)');
-    
-  const loanById = {};
-  const loanByName = {};
-  if (loans) {
-    loans.forEach(l => {
+  isGoogleSheetsSyncRunning = true;
+  try {
+    console.log('[Google Sheets Sync] Starting full pending sync (exact DB values, date-wise)...');
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+
+    // Fetch all unpaid pending schedules up to today using pagination (avoids Supabase 1,000-row cap)
+    const schedules = [];
+    const pageSize = 1000;
+    let from = 0;
+    while (true) {
+      const { data: page, error: schError } = await supabase
+        .from('collection_schedules')
+        .select('id, amount, status, collected_amount, scheduled_date, member_id, loan_id, center_id, center_name, member_name, week_number')
+        .lte('scheduled_date', today)
+        .not('status', 'in', '("Paid","Received","Verified")')
+        .order('scheduled_date', { ascending: true })
+        .range(from, from + pageSize - 1);
+
+      if (schError) throw schError;
+      if (!page || page.length === 0) break;
+      schedules.push(...page);
+      if (page.length < pageSize) break;
+      from += pageSize;
+    }
+
+    if (schedules.length === 0) {
+      console.log('[Google Sheets Sync] No pending schedules found.');
+      const emptyRes = await syncToGoogleSheets('ADD_PENDING', { records: [] });
+      if (emptyRes?.ok) {
+        setLastSyncDate(today);
+        lastGoogleSheetsSyncAt = Date.now();
+      }
+      return { syncedCount: 0, synced: Boolean(emptyRes?.ok) };
+    }
+
+    // 1. Fetch centers for name lookup fallback
+    const { data: centers } = await supabase.from('centers').select('id, name');
+    const centerMap = {};
+    if (centers) {
+      centers.forEach(c => { centerMap[c.id] = c.name; });
+    }
+
+    // 2. Fetch associated loans for status, member_no and mobile numbers (indexed ID lookup + Name fallback)
+    const loanIds = [...new Set(schedules.map(s => s.loan_id).filter(Boolean))];
+    const missingLoanNames = [...new Set(
+      schedules.filter(s => !s.loan_id && s.member_name).map(s => s.member_name.trim())
+    )];
+
+    const loanById = {};
+    const loanByName = {};
+    const registerLoan = (l) => {
       const info = {
+        status: l.status ? String(l.status).trim().toUpperCase() : '',
         mobile1: l.mobile_no ? String(l.mobile_no).trim() : '',
         mobile2: l.nominee_mobile ? String(l.nominee_mobile).trim() : '',
         memberNo: l.members?.member_no || ''
@@ -2693,87 +2717,101 @@ async function syncAllPendingToGoogleSheets() {
       if (l.member_name) {
         loanByName[l.member_name.trim().toLowerCase()] = info;
       }
-    });
-  }
+    };
 
-  // 3. Format records with all possible mobile field key variations for Google Script compatibility
-  const records = schedules.map(s => {
-    let daysLate = 0;
-    let penalty = 0;
-    const cleanStatus = s.status ? String(s.status).trim() : '';
-    if (!['Paid', 'Verified', 'Received'].includes(cleanStatus)) {
-      const todayObj = new Date(today);
-      const schedObj = new Date(s.scheduled_date);
-      const diffTime = todayObj - schedObj;
-      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-      if (diffDays > 0) {
-        daysLate = diffDays;
-        penalty = diffDays * 20;
-      }
+    for (let i = 0; i < loanIds.length; i += 500) {
+      const chunk = loanIds.slice(i, i + 500);
+      const { data: loansById } = await supabase
+        .from('loans')
+        .select('id, member_name, mobile_no, nominee_mobile, status, members(member_no)')
+        .in('id', chunk);
+      (loansById || []).forEach(registerLoan);
     }
 
-    const targetAmount = Number(s.amount) + penalty;
-    const amountDue = targetAmount - (Number(s.collected_amount) || 0);
-    
-    const loanInfo = (s.loan_id ? loanById[s.loan_id] : null) || 
-                     (s.member_name ? loanByName[s.member_name.trim().toLowerCase()] : null) || 
-                     { mobile1: '', mobile2: '', memberNo: '' };
+    if (missingLoanNames.length > 0) {
+      const { data: loansByName } = await supabase
+        .from('loans')
+        .select('id, member_name, mobile_no, nominee_mobile, status, members(member_no)')
+        .in('member_name', missingLoanNames);
+      (loansByName || []).forEach(registerLoan);
+    }
 
-    const m1 = loanInfo.mobile1 || '';
-    const m2 = loanInfo.mobile2 || '';
-    
-    return {
-      memberId: loanInfo.memberNo || s.member_name,
-      centerName: s.center_name || centerMap[s.center_id] || '',
-      memberName: s.member_name || '',
-      
-      // All mobile number key variations for 100% Google Apps Script compatibility
-      mobile1: m1,
-      mobile: m1,
-      mobile_no: m1,
-      mobileNo: m1,
-      mobile_number: m1,
-      mobileNumber: m1,
-      phone: m1,
-      phone1: m1,
-      phone_no: m1,
-      phoneNo: m1,
-      contact: m1,
-      contact_no: m1,
-      contactNo: m1,
+    // 3. Build records strictly from exact database amounts (exclude closed loans & already-billed rows)
+    const inactiveLoanStatuses = new Set(['CLOSED', 'CANCELLED', 'REJECTED']);
+    const records = [];
 
-      mobile2: m2,
-      nomineeMobile: m2,
-      nominee_mobile: m2,
-      nominee_phone: m2,
-      phone2: m2,
-      contact2: m2,
+    for (const s of schedules) {
+      const cleanStatus = s.status ? String(s.status).trim() : 'Pending';
+      if (['Paid', 'Verified', 'Received'].includes(cleanStatus)) continue;
 
-      pendingDate: s.scheduled_date,
-      pendingDue: amountDue,
-      collectedAmount: Number(s.collected_amount) || 0,
-      status: s.status,
-      scheduleId: s.id,
-      baseAmount: Number(s.amount),
-      daysLate: daysLate,
-      penaltyPerDay: 20,
-      totalPenalty: penalty
-    };
-  });
-  
-  await syncToGoogleSheets('ADD_PENDING', { records });
-  setLastSyncDate(today);
-  console.log(`[Google Sheets Sync] Synced ${records.length} pending records with mobile numbers.`);
-  return { syncedCount: records.length };
+      const loanInfo = (s.loan_id ? loanById[s.loan_id] : null) ||
+                       (s.member_name ? loanByName[s.member_name.trim().toLowerCase()] : null) ||
+                       { status: '', mobile1: '', mobile2: '', memberNo: '' };
+
+      if (loanInfo.status && inactiveLoanStatuses.has(loanInfo.status)) continue;
+
+      const baseAmount = Number(s.amount) || 0;
+      const collectedAmount = Number(s.collected_amount) || 0;
+      // Exact database remaining balance without inflated daily penalty
+      const amountDue = baseAmount - collectedAmount;
+      if (amountDue <= 0) continue; // Skip anyone whose base schedule amount is already fully billed
+
+      const schedDateStr = String(s.scheduled_date || '').split('T')[0].split(' ')[0];
+      const weekNum = Number(s.week_number) || 0;
+
+      records.push({
+        pendingDate: schedDateStr,
+        centerName: String(s.center_name || centerMap[s.center_id] || '').trim(),
+        memberId: loanInfo.memberNo || String(s.member_name || '').trim(),
+        memberName: String(s.member_name || '').trim(),
+        weekNumber: weekNum || '',
+        weekLabel: weekNum ? `Week ${weekNum}` : '',
+        mobile1: loanInfo.mobile1 || '',
+        mobile2: loanInfo.mobile2 || '',
+        baseAmount,
+        collectedAmount,
+        pendingDue: amountDue,
+        status: cleanStatus,
+        scheduleId: s.id
+      });
+    }
+
+    // 4. Sort strictly Date-wise (oldest date first), then deterministically by Center -> Member -> Week -> ID
+    records.sort((a, b) => {
+      const dateCmp = String(a.pendingDate).localeCompare(String(b.pendingDate));
+      if (dateCmp !== 0) return dateCmp;
+      const centerCmp = String(a.centerName).localeCompare(String(b.centerName));
+      if (centerCmp !== 0) return centerCmp;
+      const nameCmp = String(a.memberName).localeCompare(String(b.memberName));
+      if (nameCmp !== 0) return nameCmp;
+      const weekCmp = (Number(a.weekNumber) || 0) - (Number(b.weekNumber) || 0);
+      if (weekCmp !== 0) return weekCmp;
+      return Number(a.scheduleId) - Number(b.scheduleId);
+    });
+
+    const syncRes = await syncToGoogleSheets('ADD_PENDING', { records });
+    if (syncRes?.ok) {
+      setLastSyncDate(today);
+      lastGoogleSheetsSyncAt = Date.now();
+      console.log(`[Google Sheets Sync] Synced ${records.length} pending records (strictly date-wise).`);
+    } else {
+      console.error(`[Google Sheets Sync] Sync failed for ${records.length} records: ${syncRes?.error || 'Unknown error'}`);
+    }
+    return { syncedCount: records.length, synced: Boolean(syncRes?.ok) };
+  } finally {
+    isGoogleSheetsSyncRunning = false;
+  }
 }
 
 // Catch-up & watchdog function to ensure daily 6 PM sync never gets missed
 async function checkAndRunDailySync(triggerSource = 'schedule') {
   try {
+    if (isGoogleSheetsSyncRunning) return;
+
     const now = new Date();
     const todayIST = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
     const currentHourIST = parseInt(
-      new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }).format(now),
+      new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', hourCycle: 'h23' }).format(now),
       10
     );
 
@@ -2783,7 +2821,9 @@ async function checkAndRunDailySync(triggerSource = 'schedule') {
     if (currentHourIST >= 18 && lastSync !== todayIST) {
       console.log(`[Google Sheets Sync] Triggering daily 6 PM sync (source: ${triggerSource}, date: ${todayIST}, hour: ${currentHourIST})...`);
       const res = await syncAllPendingToGoogleSheets();
-      console.log(`[Google Sheets Sync] Daily sync completed successfully for ${todayIST} (${res.syncedCount} records).`);
+      if (res.synced) {
+        console.log(`[Google Sheets Sync] Daily sync completed successfully for ${todayIST} (${res.syncedCount} records).`);
+      }
     }
   } catch (err) {
     console.error(`[Google Sheets Sync] Daily check error (${triggerSource}):`, err.message);
@@ -2793,7 +2833,8 @@ async function checkAndRunDailySync(triggerSource = 'schedule') {
 // Admin manual Google Sheets Sync endpoint
 app.post('/api/admin/sync-sheets', async (req, res) => {
   try {
-    const result = await syncAllPendingToGoogleSheets();
+    const force = req.body?.force === true || req.query?.force === 'true';
+    const result = await syncAllPendingToGoogleSheets({ force });
     res.json({ message: 'Google Sheets sync completed successfully', ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });
