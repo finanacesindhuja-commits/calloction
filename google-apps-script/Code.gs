@@ -7,6 +7,7 @@ const SPREADSHEET_ID = '1OqSfi1H0EyEErW799yz9Ydg3WxUccKAfMibb91NbHpo';
 
 const SHEET_HEADERS = [
   'Pending Date',
+  'Days Late',
   'Center Name',
   'Member ID',
   'Member Name',
@@ -127,12 +128,29 @@ function handleAddPending_(records) {
 
   if (sorted.length === 0) return 0;
 
+  const todayStr = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
+
   const rows = sorted.map(function (r) {
     const billAmt = getBillAmt_(r);
     const collectedAmt = Number(r.collectedAmount) || 0;
     const dueAmt = Math.max(0, billAmt - collectedAmt);
+
+    // Calculate Days Late if not provided by backend
+    var daysLate = Number(r.daysLate);
+    if (isNaN(daysLate) || daysLate === undefined || daysLate === null) {
+      daysLate = 0;
+      var pDate = String(r.pendingDate || '').trim();
+      if (pDate) {
+        var d1 = new Date(pDate);
+        var d2 = new Date(todayStr);
+        var diff = Math.floor((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+        daysLate = Math.max(0, diff);
+      }
+    }
+
     return [
       String(r.pendingDate || ''),
+      daysLate,
       String(r.centerName || ''),
       String(r.memberId || ''),
       String(r.memberName || ''),
@@ -153,11 +171,11 @@ function handleAddPending_(records) {
   sheet.getRange(2, 1, numRows, SHEET_HEADERS.length).setValues(rows);
 
   try {
-    sheet.getRange(2, 1, numRows, 1).setHorizontalAlignment('center');
-    sheet.getRange(2, 5, numRows, 1).setHorizontalAlignment('center');
-    sheet.getRange(2, 6, numRows, 2).setHorizontalAlignment('center');
-    sheet.getRange(2, 10, numRows, 1).setFontWeight('bold').setFontColor('#b91c1c');
-    sheet.getRange(2, 11, numRows, 2).setHorizontalAlignment('center');
+    sheet.getRange(2, 1, numRows, 2).setHorizontalAlignment('center'); // Date & Days Late
+    sheet.getRange(2, 6, numRows, 1).setHorizontalAlignment('center'); // Week
+    sheet.getRange(2, 7, numRows, 2).setHorizontalAlignment('center'); // Mobiles
+    sheet.getRange(2, 11, numRows, 1).setFontWeight('bold').setFontColor('#b91c1c'); // Pending Due
+    sheet.getRange(2, 12, numRows, 2).setHorizontalAlignment('center'); // Status & Schedule ID
     for (var col = 1; col <= SHEET_HEADERS.length; col++) {
       sheet.autoResizeColumn(col);
     }

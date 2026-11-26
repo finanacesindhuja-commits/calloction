@@ -2759,8 +2759,18 @@ async function syncAllPendingToGoogleSheets({ force = false } = {}) {
       const schedDateStr = String(s.scheduled_date || '').split('T')[0].split(' ')[0];
       const weekNum = Number(s.week_number) || 0;
 
+      // Calculate days late (ethana naal kattala)
+      let daysLate = 0;
+      if (schedDateStr) {
+        const sDate = new Date(schedDateStr);
+        const tDate = new Date(today);
+        const diffTime = tDate - sDate;
+        daysLate = Math.max(0, Math.floor(diffTime / (1000 * 60 * 60 * 24)));
+      }
+
       records.push({
         pendingDate: schedDateStr,
+        daysLate: daysLate,
         centerName: String(s.center_name || centerMap[s.center_id] || '').trim(),
         memberId: loanInfo.memberNo || String(s.member_name || '').trim(),
         memberName: String(s.member_name || '').trim(),
